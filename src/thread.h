@@ -9,10 +9,10 @@
 #define THREAD_H_
 
 #include <pthread.h>
-#include "RdmaCommon.h"
+#include "rdma_log.h"
 
-typedef void * (*ThreadProc)(void *);
+typedef void * (*thread_func)(void *);
 
-void createThread(ThreadProc threadProc, void *arg);
+void create_thread(thread_func func, void *arg);
 
 #endif /* THREAD_H_ */

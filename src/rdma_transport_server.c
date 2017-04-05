@@ -1,11 +1,4 @@
-/*
- * RdmaTransportServer.c
- *
- *  Created on: May 17, 2016
- *      Author: yurujie
- */
-
-#include "RdmaTransportServer.h"
+#include "rdma_transport_server.h"
 
 
 static int initSocket(char *host, int port);
@@ -17,39 +10,18 @@ static void* poolCqThreadProc(void *arg);
 static void* handleCallbackProc(void *arg);
 static void handleSendComplete(struct ibv_wc *wc);
 static void handleRecvComplete(struct ibv_wc *wc);
-static void handleRecvBuf(rdma_buffer *rbuf);
+static void handleRecvBuf(struct rdma_chunk *rbuf);
 
-
-TransportServerRdma srv = {0};
-
-
+struct transport_server_rdma srv = {0};
 
 int initServer(char *host, int port) {
-
-	int ret, i;
+	int ret;
 
 	if (srv.ready) {
 		return  0;
 	}
 
-	memset(&srv, 0, sizeof(TransportServerRdma));
-
-	ret = initHashTable((hash_table *)&srv.remotePtrTable, sizeof(HASH_NODE_TYPE(remote)), REMOTE_TABLE_SIZE);
-	if (ret) {
-		return -1;
-	}
-
-	ret = initHashTable((hash_table *)&srv.receivingTable, sizeof(HASH_NODE_TYPE(receiving)), RECEIVING_TABLE_SIZE);
-	if (ret) {
-		return -1;
-	}
-
-	for (i = 0; i < HANDLE_RECV_THREADS; i++) {
-		ret = initMutexLinkQueue((mutex_link_queue *)&srv.cbQueue[i], sizeof(CallbackParam));
-		if (ret) {
-			return -1;
-		}
-	}
+	memset(&srv, 0, sizeof(struct transport_server_rdma));
 
 	ret = initSocket(host, port);
 	if (ret) {
@@ -154,45 +126,56 @@ uint64_t getMsgId() {
 
 
 
-static int initSocket(char *host, int port) {
+static int init_socket(const char *host, int port) {
+	LOG(DEBUG, "host = %s, port = %d", host, port);
 
-	struct sockaddr_in serv_addr;
-	struct hostent *he;
-	int reuse = 1;
+	struct sockaddr_in srv_addr;
 
-	rdma_debug("host = %s.\n", host);
-	he = gethostbyname(host);
-	if (!he) {
-		rdma_debug("get host by name failed.\n");
-		return 0;
-	}
-
-	if (-1 == port) {
+	// default port
+	if (port == -1) {
 		port = IP_PORT_NUM;
 	}
-	bzero((char *) &serv_addr, sizeof(serv_addr));
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(port);
-	bcopy((char *)he->h_addr, (char *)&serv_addr.sin_addr.s_addr,
-			he->h_length);
+	// get ip by locatlhost or 127.0.0.1
+	struct hostent *he = gethostbyname(host);
+	if (he == NULL) {
+		LOG(ERROR, "get host by name failed.");
+		return -1;
+	}
+	char ip_str[32]={'\0'};
+	inet_ntop(he->h_addrtype, he->h_addr, ip_str, sizeof(ip_str));
 
-	srv.localQpAttr.addr = serv_addr.sin_addr.s_addr;
+	memset(&srv_addr, 0, sizeof(srv_addr));
+	srv_addr.sin_family = AF_INET;
+	srv_addr.sin_port = htons(port);
+	srv_addr.sin_addr.s_addr = inet_addr(ip_str);
 
-	srv.sfd = socket(AF_INET, SOCK_STREAM, 0);
+	if ((srv.sfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		LOG(ERROR, "socket failed");
+		return -1;
+	}
 
+	int reuse = 1;
 	if (setsockopt(srv.sfd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(int)) < 0) {
-		rdma_debug("set socket reuse address failed.\n");
-		return -1;
+		LOG(ERROR, "set socket reuse address failed.");
+		goto error;
 	}
 
-	if (bind(srv.sfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-		rdma_debug("bind address failed\n");
-		return -1;
+	if (bind(srv.sfd, (struct sockaddr *) &srv_addr, sizeof(srv_addr)) < 0) {
+		LOG(ERROR, "bind address failed.");
+		goto error;
 	}
-	listen(srv.sfd, 1024);
-	createThread(listenThreadProc, 0);
-
+	if (listen(srv.sfd, 1024) < 0) {
+		LOG(ERROR, "listen failed.\n");
+		goto error;
+	}
+	create_thread(listenThreadProc, 0);
 	return 0;
+
+error:
+	if (srv.sfd >=0 ) {
+		close(srv.sfd);
+	}
+	return -1;
 }
 
 static void destroySocket() {
@@ -241,9 +224,9 @@ static int initRdma() {
 		return -1;
 	}
 
-	createThread(poolCqThreadProc, 0);
+	create_thread(poolCqThreadProc, 0);
 	for (i = 0; i < HANDLE_RECV_THREADS; i++) {
-		createThread(handleCallbackProc, (void *)i);
+		create_thread(handleCallbackProc, (void *)i);
 	}
 
 	return 0;
@@ -275,13 +258,12 @@ static void destroyRdma() {
 }
 
 static void* listenThreadProc(void *arg) {
-
 	int newsfd, i, ret;
 	struct sockaddr_in host;
-	qp_attr remoteQpAttr;
+	struct qp_attr remoteQpAttr;
 	RemoteInfo *remoteInfo;
 	struct ibv_ah_attr ah_attr;
-	rdma_buffer *rbuf;
+	struct rdma_chunk *rbuf;
 	int addr_len;
 
 	ah_attr.is_global		= 0;
@@ -401,8 +383,8 @@ static void* handleCallbackProc(void *arg) {
 	return NULL;
 }
 
-static void handleRecvBuf(rdma_buffer *rbuf) {
-	rdma_buffer *rbuf_s;
+static void handleRecvBuf(struct rdma_chunk *rbuf) {
+	struct rdma_chunk *rbuf_s;
 	rdma_msg_header *rmh;
 	rdma_ctrl_msg *rcm;
 	RemoteInfo *remoteInfo;
@@ -537,21 +519,21 @@ static void handleRecvBuf(rdma_buffer *rbuf) {
 
 static void handleSendComplete(struct ibv_wc *wc) {
 
-	rdma_buffer *rbuf;
+	struct rdma_chunk *rbuf;
 
-	rbuf = (rdma_buffer *)wc->wr_id;
+	rbuf = (struct rdma_chunk *)wc->wr_id;
 	rbuf->next = NULL;
 	returnRdmaBuffertoPool(&srv.rbp, rbuf);
 }
 
 static void handleRecvComplete(struct ibv_wc *wc) {
 
-	rdma_buffer *rbuf;
+	struct rdma_chunk *rbuf;
 
 	static int times = 0;
 	rdma_debug("handle receive complete times = %d\n", ++times);
 
-	rbuf = (rdma_buffer *)wc->wr_id;
+	rbuf = (struct rdma_chunk *)wc->wr_id;
 	rdma_debug("receive complete:	rbuf = 0x%016x\n", rbuf);
 	handleRecvBuf(rbuf);
 }

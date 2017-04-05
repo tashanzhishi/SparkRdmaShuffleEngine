@@ -1,19 +1,9 @@
-/*
- * RdmaTransportServer.h
- *
- *  Created on: May 17, 2016
- *      Author: yurujie
- */
+#ifndef RDMA_TRANSPORT_SERVER_H_
+#define RDMA_TRANSPORT_SERVER_H_
 
-#ifndef RDMATRANSPORTSERVER_H_
-#define RDMATRANSPORTSERVER_H_
-
-#include "RdmaUtils.h"
-#include "Thread.h"
-#include "HashCode.h"
-#include "HashTable.h"
+#include "rdma_utils.h"
+#include "thread.h"
 #include "RdmaMsgHeader.h"
-#include "LinkQueue.h"
 #include <jni.h>
 #include "jni_common.h"
 
@@ -63,11 +53,11 @@ HASH_TABLE_TYPE_DEF(ChunksBuf *, receiving)
 
 MUTEX_LINK_QUEUE_TYPE_DEF(CallbackParam, cb)
 
-typedef struct TransportServerRdma {
+struct transport_server_rdma {
 
 	int						ready;
 
-	int 					sfd;
+	int 					sfd; // server socket fd
 	char 					*host;
 	int 					accepting;
 
@@ -79,7 +69,7 @@ typedef struct TransportServerRdma {
 	struct ibv_cq			*cq;
 	int						polling;
 
-	qp_attr					localQpAttr;
+	struct qp_attr local_qp_attr;
 
 	HASH_TABLE_TYPE(remote) remotePtrTable;
 	RemoteInfo				*remoteTable;
@@ -92,11 +82,11 @@ typedef struct TransportServerRdma {
 
 	HASH_TABLE_TYPE(receiving)	receivingTable;
 
-	rdma_buffer_pool		rbp;
+	struct rdma_buffer_pool		rbp;
 
 	pthread_mutex_t			connLock;
 
-}TransportServerRdma;
+};
 
 
 int initServer(char *host, int port);
@@ -107,4 +97,4 @@ int applyforRecvs(RemoteInfo *remoteInfo, int chunks, int *req);
 uint64_t getMsgId();
 
 
-#endif /* RDMATRANSPORTSERVER_H_ */
+#endif /* RDMA_TRANSPORT_SERVER_H_ */
