@@ -1,8 +1,10 @@
 #ifndef RDMA_UTILS_H_
 #define RDMA_UTILS_H_
 
-#include "rdma_buffer_pool.h"
 #include <stdbool.h>
+#include <glib.h>
+
+#include "rdma_buffer_pool.h"
 #include "rdma_log.h"
 
 #define MAX_POLL_THREAD 4
@@ -25,6 +27,7 @@ struct rdma_context {
   int cq_num;
   pthread_mutex_t cq_lock;
   struct rdma_buffer_pool *rbp;
+  GHashTable *hash_table;
 };
 
 struct rdma_transport {

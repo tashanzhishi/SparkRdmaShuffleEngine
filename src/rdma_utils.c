@@ -13,6 +13,7 @@
 #include "rdma_buffer_pool.h"
 
 
+static void free_hash_data(gpointer kv);
 static union ibv_gid get_gid(struct ibv_context *context);
 static uint16_t get_local_lid(struct ibv_context *context);
 static int modify_qp_to_init(struct rdma_transport *transport);
@@ -25,7 +26,7 @@ int rdma_context_init()
   struct ibv_device **dev_list;
   struct ibv_device *ib_dev;
 
-  g_rdma_context = (struct rdma_context *)malloc(sizeof(struct rdma_context));
+  g_rdma_context = (struct rdma_context *)calloc(1, sizeof(struct rdma_context));
 
   srand((unsigned int)time(NULL));
 
@@ -51,11 +52,14 @@ int rdma_context_init()
 
   g_rdma_context->rbp = (struct rdma_buffer_pool*)malloc(sizeof(struct rdma_buffer_pool));
   GPR_ASSERT(g_rdma_context->rbp);
-  if (init_rdma_buffer_pool(g_rdma_context->rbp, g_rdma_context->pd) == -1) {
+  if (init_rdma_buffer_pool(g_rdma_context->rbp, g_rdma_context->pd) < 0) {
     LOG(ERROR, "failed to initiate buffer pool");
     rdma_context_destroy(g_rdma_context);
     exit(1);
   }
+
+  g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
+
   LOG(DEBUG, "rdma_context_init end");
   return 0;
 }
@@ -77,10 +81,16 @@ void rdma_context_destroy(struct rdma_context *context)
   GPR_ASSERT(context->context);
   ibv_close_device(context->context);
   context->context = NULL;
+
+  GPR_ASSERT(context->hash_table);
+  g_hash_table_destroy(context->hash_table);
+  context->hash_table = NULL;
+
   free(context);
   LOG(DEBUG, "destroy rdma success");
 }
 
+// client and server exchange information, it is a blocking process
 int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
 {
   LOG(DEBUG, "exchange_info begin");
@@ -154,6 +164,11 @@ struct rdma_transport *rdma_transport_create() {
 /*                          local function                              */
 /************************************************************************/
 
+
+static void free_hash_data(gpointer kv) {
+  g_free(kv);
+  kv = NULL;
+}
 
 static union ibv_gid get_gid(struct ibv_context *context) {
   union ibv_gid ret_gid;

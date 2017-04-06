@@ -4,8 +4,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <glib.h>
+#include <glib-2.0/glib.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -16,10 +17,10 @@
 
 extern struct rdma_context *g_rdma_context;
 
-int connect(const char *host, int port) {
+int connect_server(const char *host, uint16_t port) {
   LOG(DEBUG, "connect the host = %s, port = %d", host, port);
 
-  if (port == -1) {
+  if (port == 0) {
     port = IB_SERVER_PORT;
   }
 
@@ -42,7 +43,8 @@ int connect(const char *host, int port) {
   memset(client, 0, sizeof(struct rdma_transport_client));
 
   if ((client->fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    LOG(ERROR, "socket failed");
+    LOG(ERROR, "socket error: %s", strerror(errno));
+    free(client);
     return -1;
   }
 
@@ -50,10 +52,21 @@ int connect(const char *host, int port) {
     LOG(ERROR, "connect error: %s", strerror(errno));
     goto error;
   }
+
+
+
+  // this is a blocking function
+  if (exchange_info(client->fd, &client->transport, true) < 0) {
+    LOG(ERROR, "client exchange information failed");
+    goto error;
+  }
+
 error:
   if (client->fd > 0) {
-
+    close(client->fd);
   }
+  free(client);
+  return -1;
 }
 
 int send_msg(const char *host, uint8_t *msg, uint32_t len) {

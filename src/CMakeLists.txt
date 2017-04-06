@@ -16,4 +16,8 @@ install(TARGETS spark_rdma_shuffle_engine spark_rdma_shuffle_engine_static
         ARCHIVE DESTINATION lib)
 #install(FILES pow.h DESTINATION /tmp)
 
-target_link_libraries(${PROJECT_NAME} ibverbs)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLIB_PKG glib-2.0)
+include_directories(${GLIB_PKG_INCLUDE_DIRS})
+
+#target_link_libraries(${PROJECT_NAME} ibverbs ${GLIB_LIBRARIES})
