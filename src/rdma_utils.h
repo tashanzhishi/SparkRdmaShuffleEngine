@@ -10,14 +10,16 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 1024
+#define MAX_PRE_RECV_QP 128
 #define IB_SERVER_PORT 6789
+#define IP_CHAR_SIZE 20
 
 struct qp_attr {
-  uint64_t gid_global_interface_id;	// Store the gid fields separately because I
+  uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
   uint64_t gid_global_subnet_prefix; 	// don't like unions. Needed for RoCE only
-  int lid; // A queue pair is identified by the local id (lid)
-  int qpn; // of the device port and its queue pair number (qpn)
-  int psn;
+  uint16_t lid;                       // A queue pair is identified by the local id (lid)
+  uint32_t qpn;                       // of the device port and its queue pair number (qpn)
+  uint32_t psn;
 };
 
 struct rdma_context {
@@ -28,20 +30,30 @@ struct rdma_context {
   pthread_mutex_t cq_lock;
   struct rdma_buffer_pool *rbp;
   GHashTable *hash_table;
+  pthread_mutex_t hash_lock;
 };
 
 struct rdma_transport {
   struct qp_attr local_qp_attr;
   struct qp_attr remote_qp_attr;
-  int cq_id;
-  struct ibv_qp *rc_qp;
+  int            cq_id;
+  struct ibv_qp  *rc_qp;
+};
+
+struct rdma_work_chunk {
+  struct rdma_transport *transport;
+  struct rdma_chunk     *chunk;
+  uint32_t              len;
 };
 
 
 int rdma_context_init();
 void rdma_context_destroy(struct rdma_context *context);
 int exchange_info(int sfd, struct rdma_transport *transport, bool is_client);
-struct rdma_transport *rdma_transport_create();
+int rdma_create_connect(struct rdma_transport *transport);
+void rdma_complete_connect(struct rdma_transport *transport);
+int rdma_transport_recv(struct rdma_transport *transport);
+int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc);
 
 
 #endif /* RDMA_UTILS_H_ */

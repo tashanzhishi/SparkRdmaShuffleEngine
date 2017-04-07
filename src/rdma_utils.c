@@ -17,6 +17,8 @@ static void free_hash_data(gpointer kv);
 static union ibv_gid get_gid(struct ibv_context *context);
 static uint16_t get_local_lid(struct ibv_context *context);
 static int modify_qp_to_init(struct rdma_transport *transport);
+static int modify_qp_to_rts(struct rdma_transport *transport);
+static int modify_qp_to_rtr(struct rdma_transport *transport);
 
 struct rdma_context *g_rdma_context;
 
@@ -55,9 +57,10 @@ int rdma_context_init()
   if (init_rdma_buffer_pool(g_rdma_context->rbp, g_rdma_context->pd) < 0) {
     LOG(ERROR, "failed to initiate buffer pool");
     rdma_context_destroy(g_rdma_context);
-    exit(1);
+    abort();
   }
 
+  pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
   g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
 
   LOG(DEBUG, "rdma_context_init end");
@@ -73,6 +76,7 @@ void rdma_context_destroy(struct rdma_context *context)
     ibv_destroy_cq(context->cq[i]);
     context->cq[i] = NULL;
   }
+  pthread_mutex_destroy(&context->cq_lock);
 
   GPR_ASSERT(context->pd);
   ibv_dealloc_pd(context->pd);
@@ -83,8 +87,11 @@ void rdma_context_destroy(struct rdma_context *context)
   context->context = NULL;
 
   GPR_ASSERT(context->hash_table);
+  // must be called after ibv_destroy_qp(), because the value (struct rdma_transport *)'s
+  // element: rc_qp should be free firstly
   g_hash_table_destroy(context->hash_table);
   context->hash_table = NULL;
+  pthread_mutex_destroy(&context->hash_lock);
 
   free(context);
   LOG(DEBUG, "destroy rdma success");
@@ -104,20 +111,20 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
 
   if (is_client) {
     if (write(sfd, &transport->local_qp_attr, sizeof(struct qp_attr)) < 0) {
-      LOG(ERROR, "client exchange_info: failed to write infomation");
+      LOG(ERROR, "client exchange_info: failed to write information");
       return -1;
     }
     if (read(sfd, &transport->remote_qp_attr, sizeof(struct qp_attr)) < 0) {
-      LOG(ERROR, "client exchange_info: failed to read infomation");
+      LOG(ERROR, "client exchange_info: failed to read information");
       return -1;
     }
   } else {
     if (read(sfd, &transport->remote_qp_attr, sizeof(struct qp_attr)) < 0) {
-      LOG(ERROR, "server exchange_info: failed to read infomation");
+      LOG(ERROR, "server exchange_info: failed to read information");
       return -1;
     }
     if (write(sfd, &transport->local_qp_attr, sizeof(struct qp_attr)) < 0) {
-      LOG(ERROR, "server exchange_info: failed to write infomation");
+      LOG(ERROR, "server exchange_info: failed to write information");
       return -1;
     }
   }
@@ -126,15 +133,14 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
   return 0;
 }
 
-struct rdma_transport *rdma_transport_create() {
-  LOG(DEBUG, "rdma_transport_create begin");
-
-  struct rdma_transport *transport = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
+int rdma_create_connect(struct rdma_transport *transport) {
+  LOG(DEBUG, "rdma_create_connect begin");
   GPR_ASSERT(transport);
 
   pthread_mutex_lock(&g_rdma_context->cq_lock);
   transport->cq_id = (g_rdma_context->cq_num++)%MAX_POLL_THREAD;
   pthread_mutex_unlock(&g_rdma_context->cq_lock);
+
   struct ibv_qp_init_attr init_attr = {
       .qp_type = IBV_QPT_RC,
       .sq_sig_all = 0,
@@ -151,13 +157,75 @@ struct rdma_transport *rdma_transport_create() {
   };
   transport->rc_qp = ibv_create_qp(g_rdma_context->pd, &init_attr);
   if (modify_qp_to_init(transport) < 0) {
-    LOG(ERROR, "rdma_transport_create: failed to modify queue pair to initiate state");
+    LOG(ERROR, "rdma_create_connect: failed to modify queue pair to initiate state");
     abort();
   }
-  LOG(DEBUG, "rdma_transport_create end");
-  return transport;
+  LOG(DEBUG, "rdma_create_connect end");
+  return 0;
 }
 
+void rdma_complete_connect(struct rdma_transport *transport) {
+  GPR_ASSERT(modify_qp_to_rtr(transport) == 0);
+  GPR_ASSERT(modify_qp_to_rts(transport) == 0);
+  for (int i=0; i<MAX_PRE_RECV_QP; i++) {
+    if (rdma_transport_recv(transport) < 0) {
+      LOG(ERROR, "complete connect failed, local ip: %s, remote ip: %s",
+          transport->local_qp_attr, transport->remote_qp_attr);
+      abort();
+    }
+  }
+}
+
+int rdma_transport_recv(struct rdma_transport *transport) {
+  struct rdma_work_chunk *recv_wc = (struct rdma_work_chunk *)malloc(sizeof(struct rdma_work_chunk));
+  GPR_ASSERT(recv_wc);
+  recv_wc->chunk = get_rdma_chunk_from_pool(g_rdma_context->rbp);
+  if (recv_wc->chunk == NULL) {
+    LOG(ERROR, "rdma_transport_recv: can't get chunk from pool");
+    return -1;
+  }
+  recv_wc->len = RDMA_CHUNK_SIZE;
+  recv_wc->transport = transport;
+
+  struct ibv_sge sge = {
+      .addr   = (uint64_t)recv_wc->chunk,
+      .length = recv_wc->len,
+      .lkey   = recv_wc->chunk->mr->lkey,
+  };
+
+  struct ibv_recv_wr recv_wr = {
+      .wr_id   = (uint64_t)recv_wc,
+      .sg_list = &sge,
+      .num_sge = 1,
+  };
+  struct ibv_recv_wr *bad_wr = NULL;
+  if (ibv_post_recv(transport->rc_qp, &recv_wr, &bad_wr) < 0) {
+    LOG(ERROR, "ibv_post_recv error, %s", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc) {
+  struct ibv_sge sge = {
+      .addr = (uint64_t)send_wc->chunk,
+      .length = send_wc->len,
+      .lkey = send_wc->chunk->mr->lkey,
+  };
+  struct ibv_send_wr send_wr = {
+      .wr_id = (uint64_t)send_wc,
+      .sg_list = &sge,
+      .num_sge = 1,
+      .opcode = IBV_WR_SEND,
+      .send_flags = IBV_SEND_SIGNALED,
+  };
+  struct ibv_send_wr *bad_wr = NULL;
+  if (ibv_post_send(transport->rc_qp, &send_wr, &bad_wr) < 0) {
+    LOG(ERROR, "ibv_post_send error, %s", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
 
 
 /************************************************************************/
@@ -198,6 +266,39 @@ static int modify_qp_to_init(struct rdma_transport *transport) {
 
   if (ibv_modify_qp(transport->rc_qp, &init_attr, init_flags) < 0) {
     LOG(ERROR, "modify_qp_to_init: failed to modify QP to INIT, %s", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+static int modify_qp_to_rts(struct rdma_transport *transport) {
+  struct ibv_qp_attr rts_attr;
+  memset(&rts_attr, 0, sizeof(rts_attr));
+  rts_attr.qp_state = IBV_QPS_RTS;
+  rts_attr.sq_psn   = transport->local_qp_attr.psn;
+  int rts_flags = IBV_QP_STATE | IBV_QP_SQ_PSN;
+  if (ibv_modify_qp(transport->rc_qp, &rts_attr, rts_flags) < 0) {
+    LOG(ERROR, "modify QP to RTS error, %s", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+static int modify_qp_to_rtr(struct rdma_transport *transport) {
+  struct ibv_qp_attr rtr_attr;
+  memset(&rtr_attr, 0, sizeof(rtr_attr));
+  rtr_attr.qp_state = IBV_QPS_RTR;
+  rtr_attr.path_mtu = IBV_MTU_4096;
+  rtr_attr.dest_qp_num = transport->remote_qp_attr.qpn;
+  rtr_attr.rq_psn = transport->remote_qp_attr.psn;
+  rtr_attr.ah_attr.is_global = 0;
+  rtr_attr.ah_attr.dlid = transport->remote_qp_attr.lid;
+  rtr_attr.ah_attr.sl = 0;
+  rtr_attr.ah_attr.src_path_bits = 0;
+  rtr_attr.ah_attr.port_num = IB_PORT_NUM;
+  int rtr_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
+  if (ibv_modify_qp(transport->rc_qp, &rtr_attr, rtr_flags) < 0) {
+    LOG(ERROR, "modify QP to RTS error, %s", strerror(errno));
     return -1;
   }
   return 0;

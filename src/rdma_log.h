@@ -38,6 +38,7 @@
     if (!(x)) {                               \
       LOG(ERROR, "assertion failed: %s", #x); \
       abort();                                \
+      fflush(stdout);                         \
     }                                         \
   } while(0)
 
