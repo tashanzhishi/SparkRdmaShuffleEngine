@@ -1,6 +1,5 @@
 #include "rdma_utils.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
@@ -9,8 +8,9 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <errno.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
-#include "rdma_buffer_pool.h"
 
 
 static void free_hash_data(gpointer kv);
@@ -29,6 +29,7 @@ int rdma_context_init()
   struct ibv_device *ib_dev;
 
   g_rdma_context = (struct rdma_context *)calloc(1, sizeof(struct rdma_context));
+  GPR_ASSERT(g_rdma_context);
 
   srand((unsigned int)time(NULL));
 
@@ -60,6 +61,8 @@ int rdma_context_init()
     abort();
   }
 
+  // version < glib-2.32 should call this function
+  //g_thread_init(NULL);
   pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
   g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
 
@@ -149,13 +152,14 @@ int rdma_create_connect(struct rdma_transport *transport) {
       .srq = NULL,
       .cap = {
           .max_send_wr = MAX_CQE,
-          .max_send_wr = MAX_CQE,
+          .max_recv_wr = MAX_CQE,
           .max_send_sge = 1,
           .max_recv_sge = 1,
           .max_inline_data = 0,
       },
   };
   transport->rc_qp = ibv_create_qp(g_rdma_context->pd, &init_attr);
+  GPR_ASSERT(transport->rc_qp);
   if (modify_qp_to_init(transport) < 0) {
     LOG(ERROR, "rdma_create_connect: failed to modify queue pair to initiate state");
     abort();
@@ -169,11 +173,20 @@ void rdma_complete_connect(struct rdma_transport *transport) {
   GPR_ASSERT(modify_qp_to_rts(transport) == 0);
   for (int i=0; i<MAX_PRE_RECV_QP; i++) {
     if (rdma_transport_recv(transport) < 0) {
-      LOG(ERROR, "complete connect failed, local ip: %s, remote ip: %s",
-          transport->local_qp_attr, transport->remote_qp_attr);
+      LOG(ERROR, "complete connect failed");
       abort();
     }
   }
+}
+
+void rdma_shutdown_connect(struct rdma_transport *transport) {
+  GPR_ASSERT(transport->rc_qp);
+  if (ibv_destroy_qp(transport->rc_qp) < 0) {
+    LOG(ERROR, "ibv_destroy_qp error, %s", strerror(errno));
+    abort();
+  }
+  transport->rc_qp = NULL;
+  LOG(DEBUG, "shutdown connect");
 }
 
 int rdma_transport_recv(struct rdma_transport *transport) {
@@ -193,6 +206,7 @@ int rdma_transport_recv(struct rdma_transport *transport) {
       .lkey   = recv_wc->chunk->mr->lkey,
   };
 
+  // by the pointer recv_wc->transport, wo can get the pointer of rdma_transport_client/rdma_transport_server
   struct ibv_recv_wr recv_wr = {
       .wr_id   = (uint64_t)recv_wc,
       .sg_list = &sge,
@@ -227,6 +241,45 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
   return 0;
 }
 
+// the return is ip, but the user must free it yourself.
+void set_ip_from_host(const char *host, char *ip_str) {
+  struct hostent *he = gethostbyname(host);
+  if (he == NULL) {
+    LOG(ERROR, "gethostbyname: %s failed.", host);
+    abort();
+  }
+  inet_ntop(he->h_addrtype, he->h_addr, ip_str, IP_CHAR_SIZE);
+}
+
+void set_local_ip(char *ip_str) {
+  char host_name[32] = {'\0'};
+  if (gethostname(host_name, sizeof(host_name)) < 0) {
+    LOG(ERROR, "gethostname error, %s", strerror(errno));
+    abort();
+  }
+  set_ip_from_host(host_name, ip_str);
+}
+
+struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
+                                             create_transport_fun create_transport) {
+  struct rdma_transport *client =
+      g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+  if (client == NULL) {
+    pthread_mutex_lock(&g_rdma_context->hash_lock);
+    client = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+    if (client == NULL) {
+      if (create_transport(ip_str, port) < 0) {
+        LOG(ERROR, "connect server %s:%u failed", ip_str, port);
+        pthread_mutex_unlock(&g_rdma_context->hash_lock);
+        return NULL;
+      }
+      client = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+      client->cq_id++;
+    }
+    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+  }
+  return client;
+}
 
 /************************************************************************/
 /*                          local function                              */

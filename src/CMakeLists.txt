@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 set(SOURCE_FILES thread.c
-        rdma_buffer_pool.c RdmaMsgHeader.c rdma_log.c rdma_utils.c
+        rdma_buffer_pool.c rdma_log.c rdma_utils.c
         rdma_transport_client.c rdma_transport_server.c)
 
 # 添加动态库 关键词SHARED

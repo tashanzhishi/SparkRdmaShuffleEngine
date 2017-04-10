@@ -14,8 +14,22 @@
 #define RDMA_BUFFER_SIZE  4
 #define RDMA_BUF_FLAG     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE)
 
+struct rdma_chunk_header {
+  uint8_t flags;
+  uint32_t data_id;
+  uint32_t chunk_num;
+} __attribute__((__packed__));
+
+#define RDMA_HEADER_SIZE sizeof(struct rdma_chunk_header)
+#define RDMA_BODY_SIZE (RDMA_CHUNK_SIZE - RDMA_HEADER_SIZE)
 struct rdma_chunk {
-	uint8_t           chunk[RDMA_CHUNK_SIZE];
+  union {
+    uint8_t         chunk[RDMA_CHUNK_SIZE];
+    struct {
+      struct rdma_chunk_header header;
+      uint8_t body[RDMA_BODY_SIZE];
+    };
+  };
 	struct ibv_mr	    *mr;
 	struct rdma_chunk *next;
 };

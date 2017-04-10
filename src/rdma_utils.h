@@ -38,6 +38,12 @@ struct rdma_transport {
   struct qp_attr remote_qp_attr;
   int            cq_id;
   struct ibv_qp  *rc_qp;
+
+  /*char local_ip[IP_CHAR_SIZE];
+  char remote_ip[IP_CHAR_SIZE];
+  // for server
+  GQueue *cache;
+  pthread_mutex_t cache_lock;*/
 };
 
 struct rdma_work_chunk {
@@ -45,6 +51,8 @@ struct rdma_work_chunk {
   struct rdma_chunk     *chunk;
   uint32_t              len;
 };
+
+typedef int (*create_transport_fun)(const char *ip_str, uint16_t port);
 
 
 int rdma_context_init();
@@ -54,6 +62,13 @@ int rdma_create_connect(struct rdma_transport *transport);
 void rdma_complete_connect(struct rdma_transport *transport);
 int rdma_transport_recv(struct rdma_transport *transport);
 int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc);
+
+// socket util function
+void set_ip_from_host(const char *host, char *ip_str);
+void set_local_ip(char *ip_str);
+
+struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
+                                             create_transport_fun create_transport);
 
 
 #endif /* RDMA_UTILS_H_ */
