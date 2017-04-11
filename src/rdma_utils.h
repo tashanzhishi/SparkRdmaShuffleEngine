@@ -13,6 +13,7 @@
 #define MAX_PRE_RECV_QP 128
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
+#define THREAD_POOL_SIZE 8
 
 struct qp_attr {
   uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
@@ -31,6 +32,7 @@ struct rdma_context {
   struct rdma_buffer_pool *rbp;
   GHashTable *hash_table;
   pthread_mutex_t hash_lock;
+  GThreadPool *thread_pool;
 };
 
 struct rdma_transport {
@@ -39,11 +41,14 @@ struct rdma_transport {
   int            cq_id;
   struct ibv_qp  *rc_qp;
 
-  /*char local_ip[IP_CHAR_SIZE];
+  char local_ip[IP_CHAR_SIZE];
   char remote_ip[IP_CHAR_SIZE];
+  // for client
+  uint32_t data_id;
   // for server
+  void *recvk_array;
   GQueue *cache;
-  pthread_mutex_t cache_lock;*/
+  pthread_mutex_t cache_lock;
 };
 
 struct rdma_work_chunk {

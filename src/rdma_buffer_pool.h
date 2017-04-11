@@ -2,7 +2,6 @@
 #define RDMABUFFERPOOL_H_
 
 #include "rdma_log.h"
-//#include "RdmaMsgHeader.h"
 
 #include <stddef.h>
 #include <pthread.h>
@@ -16,6 +15,7 @@
 
 struct rdma_chunk_header {
   uint8_t flags;
+  uint32_t chunk_len;
   uint32_t data_id;
   uint32_t chunk_num;
 } __attribute__((__packed__));
@@ -32,7 +32,7 @@ struct rdma_chunk {
   };
 	struct ibv_mr	    *mr;
 	struct rdma_chunk *next;
-};
+} __attribute__((__packed__));
 
 struct link_node {
 	struct rdma_chunk *buffer;

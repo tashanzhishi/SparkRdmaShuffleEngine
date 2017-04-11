@@ -22,16 +22,15 @@ static int modify_qp_to_rtr(struct rdma_transport *transport);
 
 struct rdma_context *g_rdma_context;
 
-int rdma_context_init()
-{
+int rdma_context_init() {
   LOG(DEBUG, "rdma_context_init begin");
   struct ibv_device **dev_list;
   struct ibv_device *ib_dev;
 
-  g_rdma_context = (struct rdma_context *)calloc(1, sizeof(struct rdma_context));
+  g_rdma_context = (struct rdma_context *) calloc(1, sizeof(struct rdma_context));
   GPR_ASSERT(g_rdma_context);
 
-  srand((unsigned int)time(NULL));
+  srand((unsigned int) time(NULL));
 
   dev_list = ibv_get_device_list(NULL);
   GPR_ASSERT(dev_list);
@@ -45,7 +44,7 @@ int rdma_context_init()
   g_rdma_context->pd = ibv_alloc_pd(g_rdma_context->context);
   GPR_ASSERT(g_rdma_context->pd);
 
-  for (int i=0; i<MAX_POLL_THREAD; i++) {
+  for (int i = 0; i < MAX_POLL_THREAD; i++) {
     g_rdma_context->cq[i] = ibv_create_cq(g_rdma_context->context, MAX_CQE + 1, NULL, NULL, 0);
     GPR_ASSERT(g_rdma_context->cq[i]);
   }
@@ -53,7 +52,7 @@ int rdma_context_init()
   pthread_mutex_init(&g_rdma_context->cq_lock, NULL);
   g_rdma_context->cq_num = 0;
 
-  g_rdma_context->rbp = (struct rdma_buffer_pool*)malloc(sizeof(struct rdma_buffer_pool));
+  g_rdma_context->rbp = (struct rdma_buffer_pool *) malloc(sizeof(struct rdma_buffer_pool));
   GPR_ASSERT(g_rdma_context->rbp);
   if (init_rdma_buffer_pool(g_rdma_context->rbp, g_rdma_context->pd) < 0) {
     LOG(ERROR, "failed to initiate buffer pool");
@@ -61,10 +60,14 @@ int rdma_context_init()
     abort();
   }
 
-  // version < glib-2.32 should call this function
-  //g_thread_init(NULL);
   pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
   g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
+
+  // g_thread_init has been deprecated since version 2.32
+#if GLIB_MINOR_VERSION < 32
+  g_thread_init(NULL);
+#endif
+  g_rdma_context->thread_pool = g_thread_pool_new(consume_thread, NULL, num, TRUE, NULL);
 
   LOG(DEBUG, "rdma_context_init end");
   return 0;

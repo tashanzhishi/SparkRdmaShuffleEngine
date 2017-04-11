@@ -34,8 +34,7 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   //char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
-  struct rdma_transport_client *client =
-      (struct rdma_transport_client *)get_transport_from_ip(remote_ip_str, port, connect_server);
+  struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
   GPR_ASSERT(client);
   uint32_t data_id = client->data_id;
 
@@ -51,7 +50,7 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   copy_msg_to_rdma(chunk_list, chunk_num, msg, len, data_id);
   LOG(DEBUG, "send_msg: copy msg to rdma success");
 
-  rdma_send_msg(&client->transport, chunk_list, chunk_num, len);
+  rdma_send_msg(client, chunk_list, chunk_num, len);
 
   //free(remote_ip_str);
   LOG(DEBUG, "send_msg: send msg success");
@@ -65,8 +64,7 @@ int send_msg_with_header(const char *host, uint16_t port,
   //char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
-  struct rdma_transport_client *client =
-      (struct rdma_transport_client *)get_transport_from_ip(remote_ip_str, port, connect_server);
+  struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
   GPR_ASSERT(client);
   uint32_t data_id = client->data_id;
 
@@ -83,7 +81,7 @@ int send_msg_with_header(const char *host, uint16_t port,
   copy_header_and_body_to_rdma(chunk_list, chunk_num, header, head_len, body, body_len, data_id);
   LOG(DEBUG, "copy_header_and_body_to_rdma: copy header and body to rdma success");
 
-  rdma_send_msg(&client->transport, chunk_list, chunk_num, len);
+  rdma_send_msg(client, chunk_list, chunk_num, len);
 
   //free(remote_ip_str);
   LOG(DEBUG, "send_msg: send msg success");
@@ -120,6 +118,7 @@ static void copy_msg_to_rdma(struct rdma_chunk *chunk_list, uint32_t chunk_num,
     chunk->header.data_id = data_id;
     chunk->header.chunk_num = chunk_num;
     chunk->header.flags = 0;
+    chunk->header.chunk_len = copy_len;
     memcpy(chunk->body, now, copy_len);
     chunk = chunk->next;
     now += copy_len;
@@ -138,10 +137,11 @@ static void copy_header_and_body_to_rdma(struct rdma_chunk *chunk_list, uint32_t
   uint32_t copy_len = 0;
   uint8_t *now = header;
   for (uint32_t i=0; i<chunk_num; i++) {
+    copy_len = (len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : len);
     chunk->header.data_id = data_id;
     chunk->header.chunk_num = chunk_num;
     chunk->header.flags = 0;
-    copy_len = (len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : len);
+    chunk->header.chunk_len = copy_len;
 
     if (is_header) {
       if (head_len < RDMA_BODY_SIZE) {
@@ -174,7 +174,7 @@ static int connect_server(const char *ip_str, uint16_t port) {
   }
 
   // if link is existing, return
-  struct rdma_transport_client *ret = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+  struct rdma_transport *ret = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
   if (ret != NULL) {
     LOG(INFO, "the link to %s is existing", ip_str);
     return 0;
@@ -186,8 +186,8 @@ static int connect_server(const char *ip_str, uint16_t port) {
   srv_addr.sin_port = htons(port);
   srv_addr.sin_addr.s_addr = inet_addr(ip_str);
 
-  struct rdma_transport_client *client =
-      (struct rdma_transport_client *)calloc(1, sizeof(struct rdma_transport_client));
+  struct rdma_transport *client =
+      (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
   client->data_id = 0;
   strcpy(client->remote_ip, ip_str);
   char *local_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
@@ -214,15 +214,15 @@ static int connect_server(const char *ip_str, uint16_t port) {
   g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, client);
 
   // create qp, it must call before exchange_info()
-  rdma_create_connect(&client->transport);
+  rdma_create_connect(client);
 
   // this is a blocking function
-  if (exchange_info(client_fd, &client->transport, true) < 0) {
+  if (exchange_info(client_fd, client, true) < 0) {
     LOG(ERROR, "client exchange information failed");
     goto error;
   }
 
-  rdma_complete_connect(&client->transport);
+  rdma_complete_connect(client);
 
   close(client_fd);
   return 0;
