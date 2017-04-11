@@ -47,8 +47,6 @@ struct rdma_transport {
   uint32_t data_id;
   // for server
   void *recvk_array;
-  GQueue *cache;
-  pthread_mutex_t cache_lock;
 };
 
 struct rdma_work_chunk {

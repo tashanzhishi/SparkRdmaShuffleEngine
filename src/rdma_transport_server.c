@@ -41,6 +41,11 @@ static void work_thread(gpointer data, gpointer user_data);
 int init_server(const char *host, uint16_t port) {
   rdma_context_init();
 
+  if (init_server_socket(host, port) < 0) {
+    LOG(ERROR, "init_server_socket failed");
+    abort();
+  }
+
   // g_thread_init has been deprecated since version 2.32
 #if GLIB_MINOR_VERSION < 32
   g_thread_init(NULL);
@@ -154,8 +159,6 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
   char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE); // should not free yourself
   strcpy(remote_ip_str, ip_str);
   g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, server);
-  server->cache = g_queue_new();
-  pthread_mutex_init(&server->cache_lock, NULL);
   return 0;
 }
 
@@ -205,62 +208,69 @@ static void handle_recv_event(struct ibv_wc *wc) {
   struct rdma_work_chunk *work_chunk = (struct rdma_work_chunk *)wc->wr_id;
   struct rdma_transport *server = work_chunk->transport;
   struct rdma_chunk *chunk = work_chunk->chunk;
+
   if (chunk->header.chunk_len + RDMA_HEADER_SIZE != wc->byte_len) {
-    LOG(ERROR, "the data (id:%u chunk num:%u) from %s to %s, send %u byte, but recv %u byte",
-        chunk->header.data_id, chunk->header.chunk_num, server->remote_ip, server->local_ip,
+    LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) send chunk %u byte, but recv %u byte",
+        server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num,
         chunk->header.chunk_len + RDMA_HEADER_SIZE, wc->byte_len);
     abort();
   }
 
   // 目前设计只会有一个线程对chache操作
   // cache只是起着缓冲作用，向线程池提交的参数是可变长数组
-  //pthread_mutex_lock(&server->cache_lock);
-  //varray_t *tail = g_queue_peek_tail(server->cache);
-  varray_t *tail = server->recvk_array;
-  if (tail == NULL) {
-    varray_t *varray = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
-    varray->data_id = chunk->header.data_id;
-    varray->size = chunk->header.chunk_num;
-    varray->data[varray->len++] = chunk;
-    if (varray->len == varray->size) {
-      g_thread_pool_push(g_rdma_context->thread_pool, varray, NULL);
-      server->recvk_array = NULL;
-    }
-    //g_queue_push_tail(server->cache, varray);
-  } else if (tail->data_id == chunk->header.data_id) {
-    if (tail->len >= tail->size) {
-      LOG(ERROR, "the data (id:%u chunk num:%u) from %s to %s, when push chunk, len >= size (%u, %u)",
-          chunk->header.data_id, chunk->header.chunk_num, server->remote_ip, server->local_ip,
-          tail->len, tail->size);
+  varray_t *now = server->recvk_array;
+  if (now == NULL) {
+    // free after channelRead0
+    now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
+    GPR_ASSERT(now);
+    now->transport = server;
+    now->data_id = chunk->header.data_id;
+    now->size = chunk->header.chunk_num;
+    now->data[now->len++] = chunk;
+    server->recvk_array = now;
+  } else if (now->data_id == chunk->header.data_id) {
+    if (now->len >= now->size) {
+      LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u)  when push chunk, len >= size (%u, %u)",
+          server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num,
+          now->len, now->size);
       abort();
     }
-    tail->data[tail->len++] = chunk;
-  } else if (tail->data_id == chunk->header.data_id - 1) {
-    if (tail->len == 0 || tail->size == 0) {
-      LOG(ERROR, "the data (id:%u chunk num:%u) from %s to %s, len or size = 0",
-          chunk->header.data_id, chunk->header.chunk_num, server->remote_ip, server->local_ip);
-      abort();
-    }
-    if (tail->len != tail->size) {
-      LOG(ERROR, "the data (id:%u chunk num:%u) from %s to %s, len != size (%u, %u)",
-          chunk->header.data_id, chunk->header.chunk_num, server->remote_ip, server->local_ip,
-          tail->len, tail->size);
-      abort();
-    }
-    varray_t *varray = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
-    varray->data_id = chunk->header.data_id;
-    varray->size = chunk->header.chunk_num;
-    varray->data[varray->len++] = chunk;
-    //g_queue_push_tail(server->cache, varray);
+    now->data[now->len++] = chunk;
+  } else if (now->data_id != chunk->header.data_id) {
+    LOG(ERROR, "remote_ip:%s local_ip:%s, data_id: %u != %u",
+        server->remote_ip, server->local_ip, now->data_id, chunk->header.data_id);
+    abort();
   } else {
-    LOG(ERROR, "the data (id:%u chunk num:%u) from %s to %s, the last data_id +1 < the new data_id (%u, %u)",
-        chunk->header.data_id, chunk->header.chunk_num, server->remote_ip, server->local_ip,
-        tail->data_id, chunk->header.data_id);
+    LOG(ERROR, "remote_ip:%s local_ip:%s, unknown error", server->remote_ip, server->local_ip);
     abort();
   }
-  //pthread_mutex_unlock(&server->cache_lock);
+  if (now->len == now->size) {
+    g_thread_pool_push(g_rdma_context->thread_pool, now, NULL);
+    server->recvk_array = NULL;
+  }
+  free(work_chunk);
 }
 
+// 1. copy rdma to jvm
+// 2. call channelRead0 of spark
 static void work_thread(gpointer data, gpointer user_data) {
+  varray_t *varray = data;
+  GPR_ASSERT(varray);
+  if (varray->len != varray->size || varray->len == 0) {
+    LOG(ERROR, "varray len != size (%u, %u)", varray->len, varray->size);
+    abort();
+  }
+  uint32_t data_len = 0;
+  for (uint32_t i=0; i<varray->size; i++) {
+    data_len += varray->data[i]->header.chunk_len;
+  }
 
+  // test
+  struct rdma_transport *server = varray->transport;
+  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip, data_len, varray->data_id, server->remote_ip);
+  for (uint32_t i=0; i<varray->size; i++) {
+    release_rdma_chunk_to_pool(g_rdma_context->rbp, varray->data[i]);
+  }
+  free(varray);
+  usleep(10000);
 }

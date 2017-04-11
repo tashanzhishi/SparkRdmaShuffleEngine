@@ -63,12 +63,6 @@ int rdma_context_init() {
   pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
   g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
 
-  // g_thread_init has been deprecated since version 2.32
-#if GLIB_MINOR_VERSION < 32
-  g_thread_init(NULL);
-#endif
-  g_rdma_context->thread_pool = g_thread_pool_new(consume_thread, NULL, num, TRUE, NULL);
-
   LOG(DEBUG, "rdma_context_init end");
   return 0;
 }

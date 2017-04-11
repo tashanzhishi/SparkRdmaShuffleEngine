@@ -7,6 +7,7 @@
 #define MAX_EVENT_PER_POLL 64
 
 typedef struct varray_t {
+  struct rdma_transport *transport;
   uint32_t data_id;
   uint32_t len;
   uint32_t size;

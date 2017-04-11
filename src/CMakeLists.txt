@@ -20,4 +20,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB_PKG glib-2.0)
 include_directories(${GLIB_PKG_INCLUDE_DIRS})
 
+# 加入REQUIRED 参数,如果找不到JNI,就报错退出
+set(JAVA_HOME "/opt/java/jdk1.8.0_111")
+find_package(JNI REQUIRED)
+# 加入jni支持
+include_directories(${JAVA_INCLUDE_PATH} ${JAVA_INCLUDE_PATH2})
+
+
 #target_link_libraries(${PROJECT_NAME} ibverbs ${GLIB_LIBRARIES})
