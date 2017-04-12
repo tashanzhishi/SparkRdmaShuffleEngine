@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 2.6)
 
 set(SOURCE_FILES thread.c
         rdma_buffer_pool.c rdma_log.c rdma_utils.c

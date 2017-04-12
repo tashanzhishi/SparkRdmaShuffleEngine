@@ -20,7 +20,7 @@ struct rdma_chunk_header {
   uint32_t chunk_num;
 } __attribute__((__packed__));
 
-#define RDMA_HEADER_SIZE sizeof(struct rdma_chunk_header)
+#define RDMA_HEADER_SIZE ((uint32_t)sizeof(struct rdma_chunk_header))
 #define RDMA_BODY_SIZE (RDMA_CHUNK_SIZE - RDMA_HEADER_SIZE)
 struct rdma_chunk {
   union {

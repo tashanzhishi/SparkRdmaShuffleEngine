@@ -52,6 +52,7 @@ int init_server(const char *host, uint16_t port) {
 #endif
   g_rdma_context->thread_pool = g_thread_pool_new(work_thread, NULL, THREAD_POOL_SIZE, TRUE, NULL);
 
+  return 0;
 }
 
 
@@ -230,9 +231,8 @@ static void handle_recv_event(struct ibv_wc *wc) {
     server->recvk_array = now;
   } else if (now->data_id == chunk->header.data_id) {
     if (now->len >= now->size) {
-      LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u)  when push chunk, len >= size (%u, %u)",
-          server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num,
-          now->len, now->size);
+      LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) when push chunk, len >= size (%u, %u)",
+          server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num, now->len, now->size);
       abort();
     }
     now->data[now->len++] = chunk;

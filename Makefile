@@ -1,5 +1,5 @@
-#STATIC  := libspark_rdma.a
-SHARE   := libspark_rdma.so
+#STATIC := libspark_rdma.a
+SHARE   := ./lib/libspark_rdma.so
 
 CC      := gcc
 AR      := ar
@@ -9,15 +9,19 @@ LIBS    := -lpthread $(shell pkg-config --libs glib-2.0) $(shell pkg-config --li
 CFLAGS  := -Wall $(shell pkg-config --cflags glib-2.0) $(shell pkg-config --cflags gthread-2.0)
 SHARE_FLAGS := -fPIC -shared -o
 
-SOURCE  := $(wildcard *.c)
-OBJS    := $(patsubst %.c,%.o,$(SOURCE))
+SRC_DIR := ./src
+OBJ_DIR := ./obj
+LIB_DIR := ./lib
+SOURCES  := $(wildcard $(SRC_DIR)/*.c)
+OBJS    := $(patsubst %.c, $(OBJ_DIR)/%.o, $(notdir $(SOURCES)))
 
+#$(warning $(SOURCES))
+#$(warning $(OBJS))
 
-.PHONY : objs clean
 
 all : $(SHARE)
 
-%.o : %.c
+$(OBJ_DIR)/%.o : $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -fpic -c $< -o $@ $(LDFLAGS) $(LIBS)
 
 #$(STATIC) : $(OBJS)
@@ -31,4 +35,4 @@ $(SHARE) : $(OBJS)
 .PHONY : clean
 
 clean :
-	rm -f *.o *.a *.so
+	rm -f $(OBJS) $(SHARE) $(STATIC)
