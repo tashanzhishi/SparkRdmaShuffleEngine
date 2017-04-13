@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int append_rdma_buffer_pool(struct rdma_buffer_pool *rbp, int size);
+static int append_rdma_buffer_pool(struct rdma_buffer_pool *rbp, uint32_t size);
 
 int init_rdma_buffer_pool(struct rdma_buffer_pool *rbp, struct ibv_pd	*pd) {
 	memset(rbp, 0, sizeof(struct rdma_buffer_pool));
@@ -32,7 +32,7 @@ struct rdma_chunk *get_rdma_chunk_from_pool(struct rdma_buffer_pool *rbp) {
 	struct rdma_chunk *chunk;
 
 	if (rbp->free_list == NULL) {
-    if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) == -1) {
+    if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) < 0) {
       LOG(ERROR, "when get chunk from pool, the free list is null, and append failed.");
       return NULL;
     }
@@ -50,28 +50,34 @@ struct rdma_chunk *get_rdma_chunk_from_pool(struct rdma_buffer_pool *rbp) {
 	return chunk;
 }
 
-struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, int count) {
+struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, uint32_t count) {
+  if (count == 0) {
+    return NULL;
+  }
+
+  // has bug
   while (rbp->free_size < count) {
-    if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) == -1) {
+    if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) < 0) {
       LOG(ERROR, "when get chunk from pool, the free list is null, and append failed.");
+      pthread_mutex_unlock(&rbp->lock);
       return NULL;
     }
 	}
 
-	pthread_mutex_lock(&rbp->lock);
+  pthread_mutex_lock(&rbp->lock);
 
   struct rdma_chunk *chunk = rbp->free_list;
-  struct rdma_chunk *tmp = chunk;
-	for (int i = 0; i < count - 1; i++) {
-		if (tmp == NULL) {
+  struct rdma_chunk *now = chunk;
+	for (uint32_t i = 0; i < count - 1; i++) {
+		if (now == NULL) {
 			LOG(ERROR, "get rdma buffer list failed");
 			pthread_mutex_unlock(&rbp->lock);
 			return NULL;
 		}
-		tmp = tmp->next;
+		now = now->next;
 	}
-	rbp->free_list = tmp->next;
-	tmp->next = NULL;
+	rbp->free_list = now->next;
+	now->next = NULL;
 	rbp->free_size -= count;
 
 	pthread_mutex_unlock(&rbp->lock);
@@ -94,10 +100,10 @@ void release_rdma_chunk_to_pool(struct rdma_buffer_pool *rbp, struct rdma_chunk 
 }
 
 
-static int append_rdma_buffer_pool(struct rdma_buffer_pool *rbp, int size) {
-  int buffer_cnt = (size / RDMA_BUFFER_SIZE) + ((size % RDMA_BUFFER_SIZE == 0)? 0: 1);
+static int append_rdma_buffer_pool(struct rdma_buffer_pool *rbp, uint32_t size) {
+  uint32_t buffer_cnt = (size / RDMA_BUFFER_SIZE) + ((size % RDMA_BUFFER_SIZE == 0)? 0: 1);
   size = buffer_cnt * RDMA_BUFFER_SIZE;
-  LOG(DEBUG, "append rdma buffer pool: %d", size);
+  LOG(DEBUG, "append rdma buffer pool: %u", size);
   if (size == 0) {
     return -1;
   }

@@ -15,6 +15,9 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+
+#include "rdma_utils.h"
+
 extern struct rdma_context *g_rdma_context;
 
 static int connect_server(const char *ip_str, uint16_t port);
@@ -35,10 +38,12 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
-  GPR_ASSERT(client);
+  GPR_ASSERT(client != NULL);
+  LOG(DEBUG, "%s client %p", remote_ip_str, client);
+
   uint32_t data_id = client->data_id;
 
-  uint32_t chunk_num = len / RDMA_CHUNK_SIZE + (len % RDMA_CHUNK_SIZE == 0 ? 0 : 1);
+  uint32_t chunk_num = len / RDMA_BODY_SIZE + (len % RDMA_BODY_SIZE == 0 ? 0 : 1);
   struct rdma_chunk *chunk_list = get_rdma_chunk_list_from_pool(g_rdma_context->rbp, chunk_num);
   if (chunk_list == NULL) {
     LOG(ERROR, "send_msg error: get chunk list from pool failed, local ip %s, remote ip %s",
@@ -65,11 +70,12 @@ int send_msg_with_header(const char *host, uint16_t port,
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
-  GPR_ASSERT(client);
+  GPR_ASSERT(client != NULL);
+
   uint32_t data_id = client->data_id;
 
   uint32_t len = head_len + body_len;
-  uint32_t chunk_num = len / RDMA_CHUNK_SIZE + (len % RDMA_CHUNK_SIZE == 0 ? 0 : 1);
+  uint32_t chunk_num = len / RDMA_BODY_SIZE + (len % RDMA_BODY_SIZE == 0 ? 0 : 1);
   struct rdma_chunk *chunk_list = get_rdma_chunk_list_from_pool(g_rdma_context->rbp, chunk_num);
   if (chunk_list == NULL) {
     LOG(ERROR, "send_msg error: get chunk list from pool failed, local ip %s, remote ip %s",
@@ -97,15 +103,19 @@ int send_msg_with_header(const char *host, uint16_t port,
 static void rdma_send_msg(struct rdma_transport *transport,
                           struct rdma_chunk *chunk_list, uint32_t chunk_num, uint32_t len) {
   struct rdma_chunk *chunk = chunk_list;
+  uint32_t copy_len = 0;
+
   for (uint32_t i=0; i<chunk_num; i++) {
+    copy_len = (len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : len);
     struct rdma_work_chunk *send_wc = (struct rdma_work_chunk *)malloc(sizeof(struct rdma_work_chunk));
     send_wc->transport = transport;
     send_wc->chunk = chunk;
-    send_wc->len = (i == chunk_num-1 ? RDMA_CHUNK_SIZE : len%RDMA_CHUNK_SIZE);
+    send_wc->len = copy_len;
     rdma_transport_send(transport, send_wc);
     chunk = chunk->next;
+    len -= RDMA_BODY_SIZE;
   }
-  GPR_ASSERT(chunk);
+  GPR_ASSERT(chunk==NULL);
 }
 
 static void copy_msg_to_rdma(struct rdma_chunk *chunk_list, uint32_t chunk_num,
@@ -124,7 +134,7 @@ static void copy_msg_to_rdma(struct rdma_chunk *chunk_list, uint32_t chunk_num,
     now += copy_len;
     len -= RDMA_BODY_SIZE;
   }
-  GPR_ASSERT(chunk);
+  GPR_ASSERT(chunk==NULL);
   LOG(DEBUG, "copy %d chunks %u byte to rdma", chunk_num, len);
 }
 
@@ -164,7 +174,7 @@ static void copy_header_and_body_to_rdma(struct rdma_chunk *chunk_list, uint32_t
     len -= copy_len;
     chunk = chunk->next;
   }
-  GPR_ASSERT(chunk);
+  GPR_ASSERT(chunk==NULL);
 }
 
 static int connect_server(const char *ip_str, uint16_t port) {

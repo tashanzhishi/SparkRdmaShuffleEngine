@@ -1,8 +1,6 @@
 #ifndef RDMA_TRANSPORT_CLIENT_H_
 #define RDMA_TRANSPORT_CLIENT_H_
 
-#include "rdma_utils.h"
-
 #include <stdint.h>
 
 

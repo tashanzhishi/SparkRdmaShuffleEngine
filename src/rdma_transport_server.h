@@ -1,19 +1,9 @@
 #ifndef RDMA_TRANSPORT_SERVER_H_
 #define RDMA_TRANSPORT_SERVER_H_
 
-#include "rdma_utils.h"
-#include "thread.h"
-
 #define MAX_EVENT_PER_POLL 64
 
-typedef struct varray_t {
-  struct rdma_transport *transport;
-  uint32_t data_id;
-  uint32_t len;
-  uint32_t size;
-  struct rdma_chunk* data[0];
-} varray_t;
-#define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(len)))
+#include <stdint.h>
 
 /*struct rdma_transport_server {
   struct rdma_transport transport;

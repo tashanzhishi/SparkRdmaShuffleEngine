@@ -48,6 +48,7 @@ int rdma_context_init() {
   for (int i = 0; i < MAX_POLL_THREAD; i++) {
     g_rdma_context->cq[i] = ibv_create_cq(g_rdma_context->context, MAX_CQE + 1, NULL, NULL, 0);
     GPR_ASSERT(g_rdma_context->cq[i]);
+    LOG(DEBUG, "cq_id: %d cq:%p", i, g_rdma_context->cq[i]);
   }
 
   pthread_mutex_init(&g_rdma_context->cq_lock, NULL);
@@ -139,14 +140,14 @@ int rdma_create_connect(struct rdma_transport *transport) {
   GPR_ASSERT(transport);
 
   pthread_mutex_lock(&g_rdma_context->cq_lock);
-  transport->cq_id = (g_rdma_context->cq_num++)%MAX_POLL_THREAD;
+  struct ibv_cq *cq = g_rdma_context->cq[(g_rdma_context->cq_num++)%MAX_POLL_THREAD];
   pthread_mutex_unlock(&g_rdma_context->cq_lock);
 
   struct ibv_qp_init_attr init_attr = {
       .qp_type = IBV_QPT_RC,
       .sq_sig_all = 0,
-      .send_cq = g_rdma_context->cq[transport->cq_id],
-      .recv_cq = g_rdma_context->cq[transport->cq_id],
+      .send_cq = cq,
+      .recv_cq = cq,
       .srq = NULL,
       .cap = {
           .max_send_wr = MAX_CQE,
@@ -162,7 +163,7 @@ int rdma_create_connect(struct rdma_transport *transport) {
     LOG(ERROR, "rdma_create_connect: failed to modify queue pair to initiate state");
     abort();
   }
-  LOG(DEBUG, "rdma_create_connect end");
+  LOG(DEBUG, "rdma_create_connect end cq: %p, qp: %p", cq, transport->rc_qp);
   return 0;
 }
 
@@ -175,6 +176,7 @@ void rdma_complete_connect(struct rdma_transport *transport) {
       abort();
     }
   }
+  LOG(DEBUG, "%s -> %s complete connect", transport->local_ip, transport->remote_ip);
 }
 
 void rdma_shutdown_connect(struct rdma_transport *transport) {
@@ -221,7 +223,7 @@ int rdma_transport_recv(struct rdma_transport *transport) {
 int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc) {
   struct ibv_sge sge = {
       .addr = (uint64_t)send_wc->chunk,
-      .length = send_wc->len,
+      .length = send_wc->len + RDMA_HEADER_SIZE,
       .lkey = send_wc->chunk->mr->lkey,
   };
   struct ibv_send_wr send_wr = {
@@ -236,6 +238,7 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
     LOG(ERROR, "ibv_post_send error, %s", strerror(errno));
     return -1;
   }
+  LOG(DEBUG, "%p post send %u byte", transport->rc_qp, send_wc->len+RDMA_HEADER_SIZE);
   return 0;
 }
 

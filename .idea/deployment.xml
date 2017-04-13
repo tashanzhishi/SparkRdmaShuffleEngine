@@ -9,6 +9,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="172.16.0.12">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/wyb/source/SparkRdmaShuffleEngine" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
     </serverData>
   </component>
 </project>

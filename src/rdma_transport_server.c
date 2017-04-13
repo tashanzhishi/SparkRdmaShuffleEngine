@@ -15,11 +15,14 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include "rdma_utils.h"
+#include "thread.h"
+
+
 extern struct rdma_context *g_rdma_context;
 
 static volatile int accept_loop = 1;
 
-static int poll_cq_id[MAX_EVENT_PER_POLL];
 
 struct accept_arg {
   int sfd;
@@ -75,29 +78,34 @@ static int init_server_socket(const char *host, uint16_t port) {
   memset(&srv_addr, 0, sizeof(srv_addr));
   srv_addr.sin_family = AF_INET;
   srv_addr.sin_port = htons(port);
-  srv_addr.sin_addr.s_addr = inet_addr(ip_str);
+  srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  //srv_addr.sin_addr.s_addr = inet_addr(ip_str);
 
   int sfd;
   if ((sfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     LOG(ERROR, "socket error: %s", strerror(errno));
     return -1;
   }
+  LOG(DEBUG, "scoket success");
 
   int reuse = 1;
   if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(int)) < 0) {
     LOG(ERROR, "setsockopt reuse ip %s error, %s", ip_str, strerror(errno));
     return -1;
   }
+  LOG(DEBUG, "setsockopt success");
 
   if (bind(sfd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0) {
     LOG(ERROR, "bind ip %s error, %s", ip_str, strerror(errno));
     return -1;
   }
+  LOG(DEBUG, "bind success");
 
   if (listen(sfd, 1024) < 0) {
     LOG(ERROR, "listen ip %s error, %s", ip_str, strerror(errno));
     return -1;
   }
+  LOG(DEBUG, "listen success");
 
   struct accept_arg *arg = (struct accept_arg *)malloc(sizeof(struct accept_arg));
   arg->sfd = sfd;
@@ -108,35 +116,45 @@ static int init_server_socket(const char *host, uint16_t port) {
   // and it will create rdma_transport_server (or it is existing?)
   create_thread(accept_thread, arg);
 
-  for (int i=0; i<MAX_POLL_THREAD; i++) {
-    poll_cq_id[i] = i;
-    create_thread(poll_thread, &poll_cq_id[i]);
-  }
 
+  for (int i=0; i<MAX_POLL_THREAD; i++) {
+    create_thread(poll_thread, g_rdma_context->cq[i]);
+  }
+  LOG(DEBUG, "create %d poll thread", MAX_POLL_THREAD);
+
+  LOG(DEBUG, "init server end");
   return 0;
 }
 
+
+
 // the arg should free in this function
 static void *accept_thread(void *arg) {
+  LOG(DEBUG, "accept thread begin");
+
   struct accept_arg * info = (struct accept_arg *)arg;
   int sfd = info->sfd;
   char *local_ip = info->ip_str;
-  struct sockaddr_in addr;
-  socklen_t socklen;
 
   while (accept_loop) {
+    struct sockaddr_in addr, client_addr;
+    socklen_t socklen = sizeof(addr);
     int fd = accept(sfd, (struct sockaddr *)&addr, &socklen);
     if (fd == -1) {
       LOG(ERROR, "lcoal ip %s accept error, %s", local_ip, strerror(errno));
       abort();
     }
 
-    struct sockaddr_in client_addr;
     char remote_ip[IP_CHAR_SIZE] = {'\0'};
     memcpy(&client_addr, &addr, sizeof(addr));
     strcpy(remote_ip, inet_ntoa(client_addr.sin_addr));
+    LOG(DEBUG, "%s accept %s, fd=%d", local_ip, remote_ip, fd);
+    //strcpy(remote_ip, "172.18.0.11");
 
     struct rdma_transport *server = get_transport_from_ip(remote_ip, info->port, create_transport_server);
+    GPR_ASSERT(server);
+    LOG(DEBUG, "server %p", server);
+
     strcpy(server->local_ip, local_ip);
     strcpy(server->remote_ip, remote_ip);
 
@@ -164,14 +182,17 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
 }
 
 static void *poll_thread(void *arg) {
-  int cq_id = *(int *)arg;
-  struct ibv_cq *cq = g_rdma_context->cq[cq_id];
+  struct ibv_cq *cq = (struct ibv_cq *)arg;
+  GPR_ASSERT(cq);
+  LOG(DEBUG, "cq pointer: %p", cq);
+
   int event_num = 0;
   struct ibv_wc wc[MAX_EVENT_PER_POLL];
 
   volatile int poll_loop = 1;
   while (poll_loop) {
     event_num = 0;
+    LOG(DEBUG, "begin poll");
     while (!event_num) {
       event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
     }
@@ -267,10 +288,12 @@ static void work_thread(gpointer data, gpointer user_data) {
 
   // test
   struct rdma_transport *server = varray->transport;
-  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip, data_len, varray->data_id, server->remote_ip);
+  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
+      data_len, varray->data_id, server->remote_ip);
+  LOG(DEBUG, "message: %s", varray->data[0]->body);
   for (uint32_t i=0; i<varray->size; i++) {
     release_rdma_chunk_to_pool(g_rdma_context->rbp, varray->data[i]);
   }
   free(varray);
-  usleep(10000);
+  //usleep(100);
 }

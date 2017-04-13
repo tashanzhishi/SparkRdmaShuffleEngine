@@ -43,8 +43,8 @@ struct link_node {
 struct rdma_buffer_pool {
   struct link_node  *link_head;
 	struct rdma_chunk *free_list;
-	int               total_size;
-	int               free_size;
+	uint32_t          total_size;
+	uint32_t          free_size;
   struct ibv_pd     *pd;
 	pthread_mutex_t   lock;
 };
@@ -53,7 +53,7 @@ struct rdma_buffer_pool {
 int init_rdma_buffer_pool(struct rdma_buffer_pool *rbp, struct ibv_pd	*pd);
 void destroy_rdma_buffer_pool(struct rdma_buffer_pool *rbp);
 struct rdma_chunk *get_rdma_chunk_from_pool(struct rdma_buffer_pool *rbp);
-struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, int count);
+struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, uint32_t count);
 void release_rdma_chunk_to_pool(struct rdma_buffer_pool *rbp, struct rdma_chunk *chunk);
 
 

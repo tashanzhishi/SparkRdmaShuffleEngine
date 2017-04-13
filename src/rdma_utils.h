@@ -10,7 +10,7 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 1024
-#define MAX_PRE_RECV_QP 128
+#define MAX_PRE_RECV_QP 4
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 8
@@ -54,6 +54,16 @@ struct rdma_work_chunk {
   struct rdma_chunk     *chunk;
   uint32_t              len;
 };
+
+
+typedef struct varray_t {
+  struct rdma_transport *transport;
+  uint32_t data_id;
+  uint32_t len;
+  uint32_t size;
+  struct rdma_chunk* data[0];
+} varray_t;
+#define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(len)))
 
 typedef int (*create_transport_fun)(const char *ip_str, uint16_t port);
 

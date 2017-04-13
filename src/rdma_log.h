@@ -2,6 +2,8 @@
 #define RDMA_LOG_H_
 
 #include <stdio.h>
+#include <pthread.h>
+
 
 // bash shell color
 #define MY_COL(x)  "\033[;" #x "m"
@@ -22,13 +24,13 @@
   do {                                                                               \
     if (level & LOG_FLAGS) {                                                         \
       if (level == ERROR) {                                                          \
-        printf(COL_RED""__FILE__"#%d: "fmt"\n"COL_END, __LINE__, ##__VA_ARGS__);     \
+        printf(COL_RED"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);     \
       } else if (level == DEBUG) {                                                   \
-        printf(COL_WHITE""__FILE__"#%d: "fmt"\n"COL_END, __LINE__, ##__VA_ARGS__);   \
+        printf(COL_WHITE"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);   \
       } else if (level == INFO) {                                                    \
-        printf(COL_GREEN""__FILE__"#%d: "fmt"\n"COL_END, __LINE__, ##__VA_ARGS__);   \
+        printf(COL_GREEN"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);   \
       } else {                                                                       \
-        printf(COL_RED""__FILE__"#%d: LOG level must be one of {ERROR, DEBUG, INFO}\n"COL_END, __LINE__);   \
+        printf(COL_RED"[%lu] "__FILE__"#%d: LOG level must be one of {ERROR, DEBUG, INFO}\n"COL_END, pthread_self()%100, __LINE__);   \
       }                                                                              \
     }                                                                                \
   } while(0)
