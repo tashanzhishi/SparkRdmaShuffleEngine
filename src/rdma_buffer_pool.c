@@ -55,11 +55,10 @@ struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, u
     return NULL;
   }
 
-  // has bug
+  // could has bug
   while (rbp->free_size < count) {
     if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) < 0) {
       LOG(ERROR, "when get chunk from pool, the free list is null, and append failed.");
-      pthread_mutex_unlock(&rbp->lock);
       return NULL;
     }
 	}

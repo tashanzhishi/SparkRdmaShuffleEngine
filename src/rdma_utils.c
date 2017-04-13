@@ -142,9 +142,10 @@ int rdma_create_connect(struct rdma_transport *transport) {
   pthread_mutex_lock(&g_rdma_context->cq_lock);
   struct ibv_cq *cq = g_rdma_context->cq[(g_rdma_context->cq_num++)%MAX_POLL_THREAD];
   pthread_mutex_unlock(&g_rdma_context->cq_lock);
+  transport->cq = cq;
 
   struct ibv_qp_init_attr init_attr = {
-      .qp_type = IBV_QPT_RC,
+      .qp_type = IBV_QPT_UC,
       .sq_sig_all = 0,
       .send_cq = cq,
       .recv_cq = cq,
@@ -239,6 +240,7 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
     return -1;
   }
   LOG(DEBUG, "%p post send %u byte", transport->rc_qp, send_wc->len+RDMA_HEADER_SIZE);
+
   return 0;
 }
 

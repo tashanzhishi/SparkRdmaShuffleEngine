@@ -54,6 +54,7 @@ int init_server(const char *host, uint16_t port) {
   g_thread_init(NULL);
 #endif
   g_rdma_context->thread_pool = g_thread_pool_new(work_thread, NULL, THREAD_POOL_SIZE, TRUE, NULL);
+  LOG(DEBUG, "new thread pool of %d", THREAD_POOL_SIZE);
 
   return 0;
 }
@@ -196,6 +197,8 @@ static void *poll_thread(void *arg) {
     while (!event_num) {
       event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
     }
+    LOG(DEBUG, "poll %d", event_num);
+
     if (event_num < 0) {
       LOG(ERROR, "ibv_poll_cq poll error");
     } else {
@@ -205,9 +208,13 @@ static void *poll_thread(void *arg) {
           abort();
         } else {
           if (wc[i].opcode == IBV_WC_SEND) {
+            LOG(DEBUG, "handle a send event begin");
             handle_send_event(&wc[i]);
+            LOG(DEBUG, "handle a send event end");
           } else if (wc[i].opcode == IBV_WC_RECV) {
+            LOG(DEBUG, "handle a recv event begin");
             handle_recv_event(&wc[i]);
+            LOG(DEBUG, "handle a recv event end");
           } else {
             LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
           }
@@ -250,6 +257,10 @@ static void handle_recv_event(struct ibv_wc *wc) {
     now->size = chunk->header.chunk_num;
     now->data[now->len++] = chunk;
     server->recvk_array = now;
+
+    for (int i=0; i<now->size; i++) {
+      rdma_transport_recv(server);
+    }
   } else if (now->data_id == chunk->header.data_id) {
     if (now->len >= now->size) {
       LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) when push chunk, len >= size (%u, %u)",
@@ -266,6 +277,7 @@ static void handle_recv_event(struct ibv_wc *wc) {
     abort();
   }
   if (now->len == now->size) {
+    LOG(DEBUG, "push a data to thread pool");
     g_thread_pool_push(g_rdma_context->thread_pool, now, NULL);
     server->recvk_array = NULL;
   }
@@ -290,10 +302,11 @@ static void work_thread(gpointer data, gpointer user_data) {
   struct rdma_transport *server = varray->transport;
   LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
       data_len, varray->data_id, server->remote_ip);
-  LOG(DEBUG, "message: %s", varray->data[0]->body);
+  //LOG(DEBUG, "message: %s", varray->data[0]->body);
   for (uint32_t i=0; i<varray->size; i++) {
     release_rdma_chunk_to_pool(g_rdma_context->rbp, varray->data[i]);
   }
   free(varray);
+  LOG(DEBUG, "work thread success");
   //usleep(100);
 }

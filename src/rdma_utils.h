@@ -40,6 +40,7 @@ struct rdma_transport {
   struct qp_attr remote_qp_attr;
   int            cq_id;
   struct ibv_qp  *rc_qp;
+  struct ibv_cq  *cq;
 
   char local_ip[IP_CHAR_SIZE];
   char remote_ip[IP_CHAR_SIZE];
@@ -63,7 +64,7 @@ typedef struct varray_t {
   uint32_t size;
   struct rdma_chunk* data[0];
 } varray_t;
-#define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(len)))
+#define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(sizeof(void*)*(len))))
 
 typedef int (*create_transport_fun)(const char *ip_str, uint16_t port);
 
