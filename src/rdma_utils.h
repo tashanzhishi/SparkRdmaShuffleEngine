@@ -33,6 +33,7 @@ struct rdma_context {
   GHashTable *hash_table;
   pthread_mutex_t hash_lock;
   GThreadPool *thread_pool;
+  int sfd;
 };
 
 struct rdma_transport {
@@ -71,9 +72,13 @@ typedef int (*create_transport_fun)(const char *ip_str, uint16_t port);
 
 int rdma_context_init();
 void rdma_context_destroy(struct rdma_context *context);
+
 int exchange_info(int sfd, struct rdma_transport *transport, bool is_client);
+
 int rdma_create_connect(struct rdma_transport *transport);
 void rdma_complete_connect(struct rdma_transport *transport);
+void rdma_shutdown_connect(struct rdma_transport *transport);
+
 int rdma_transport_recv(struct rdma_transport *transport);
 int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc);
 

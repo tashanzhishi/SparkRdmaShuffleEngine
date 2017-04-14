@@ -21,8 +21,6 @@
 
 extern struct rdma_context *g_rdma_context;
 
-static volatile int accept_loop = 1;
-
 
 struct accept_arg {
   int sfd;
@@ -38,6 +36,8 @@ static void *poll_thread(void *arg);
 static void handle_send_event(struct ibv_wc *wc);
 static void handle_recv_event(struct ibv_wc *wc);
 static void work_thread(gpointer data, gpointer user_data);
+
+static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data);
 
 
 
@@ -61,10 +61,30 @@ int init_server(const char *host, uint16_t port) {
 
 
 
+void destroy_server() {
+  LOG(INFO, "destroy server and will free all resource");
+
+  // stop all work thread
+  g_thread_pool_free(g_rdma_context->thread_pool, 0, 1);
+
+  // shutdown all connection of hash table
+  g_hash_table_foreach(g_rdma_context->hash_table, shutdown_qp, NULL);
+
+  // stop accept thread
+  shutdown(g_rdma_context->sfd, SHUT_RDWR);
+  close(g_rdma_context->sfd);
+}
+
+
+
 /************************************************************************/
 /*                          local function                              */
 /************************************************************************/
 
+static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data) {
+  struct rdma_transport *transport = (struct rdma_transport *)value;
+  rdma_shutdown_connect(transport);
+}
 
 static int init_server_socket(const char *host, uint16_t port) {
   LOG(DEBUG, "connect the host = %s, port = %d", host, port);
@@ -88,6 +108,7 @@ static int init_server_socket(const char *host, uint16_t port) {
     return -1;
   }
   LOG(DEBUG, "scoket success");
+  g_rdma_context->sfd = sfd;
 
   int reuse = 1;
   if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(int)) < 0) {
@@ -137,13 +158,13 @@ static void *accept_thread(void *arg) {
   int sfd = info->sfd;
   char *local_ip = info->ip_str;
 
-  while (accept_loop) {
+  while (1) {
     struct sockaddr_in addr, client_addr;
     socklen_t socklen = sizeof(addr);
     int fd = accept(sfd, (struct sockaddr *)&addr, &socklen);
     if (fd == -1) {
       LOG(ERROR, "lcoal ip %s accept error, %s", local_ip, strerror(errno));
-      abort();
+      break;
     }
 
     char remote_ip[IP_CHAR_SIZE] = {'\0'};
@@ -185,7 +206,6 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
 static void *poll_thread(void *arg) {
   struct ibv_cq *cq = (struct ibv_cq *)arg;
   GPR_ASSERT(cq);
-  LOG(DEBUG, "cq pointer: %p", cq);
 
   int event_num = 0;
   struct ibv_wc wc[MAX_EVENT_PER_POLL];

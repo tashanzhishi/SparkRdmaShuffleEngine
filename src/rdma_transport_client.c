@@ -54,7 +54,6 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   struct rdma_chunk *chunk = chunk_list;
   for (int i=0; i<chunk_num; i++) {
     chunk_array->data[i] = chunk;
-    printf("chunk %d: %p\n", i, chunk);
     chunk = chunk->next;
   }
   GPR_ASSERT(chunk==NULL);
