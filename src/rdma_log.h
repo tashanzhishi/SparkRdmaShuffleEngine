@@ -24,14 +24,12 @@
   do {                                                                               \
     if (level & LOG_FLAGS) {                                                         \
       if (level == ERROR) {                                                          \
-        printf(COL_RED"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);     \
+        fprintf(stdout, "[%02lu] [ERROR] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
       } else if (level == DEBUG) {                                                   \
-        printf(COL_WHITE"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);   \
+        fprintf(stdout, "[%02lu] [DEBUG] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
       } else if (level == INFO) {                                                    \
-        printf(COL_GREEN"[%lu] "__FILE__"#%d: "fmt"\n"COL_END, pthread_self()%100, __LINE__, ##__VA_ARGS__);   \
-      } else {                                                                       \
-        printf(COL_RED"[%lu] "__FILE__"#%d: LOG level must be one of {ERROR, DEBUG, INFO}\n"COL_END, pthread_self()%100, __LINE__);   \
-      }                                                                              \
+        fprintf(stdout, "[%02lu] [ INFO] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
+      } \
     }                                                                                \
   } while(0)
 

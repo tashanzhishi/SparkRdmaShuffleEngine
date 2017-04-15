@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <signal.h>
 
 #include "rdma_utils.h"
 #include "thread.h"
@@ -38,6 +39,7 @@ static void handle_recv_event(struct ibv_wc *wc);
 static void work_thread(gpointer data, gpointer user_data);
 
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data);
+static void quit_thread(int signo);
 
 
 
@@ -73,6 +75,14 @@ void destroy_server() {
   // stop accept thread
   shutdown(g_rdma_context->sfd, SHUT_RDWR);
   close(g_rdma_context->sfd);
+
+  // kill poll thread
+  for (int i=0; i<MAX_POLL_THREAD; i++) {
+    pthread_kill(g_rdma_context->pid[i], SIGQUIT);
+  }
+
+  rdma_context_destroy(g_rdma_context);
+  sleep(1);
 }
 
 
@@ -84,6 +94,11 @@ void destroy_server() {
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data) {
   struct rdma_transport *transport = (struct rdma_transport *)value;
   rdma_shutdown_connect(transport);
+}
+
+static void quit_thread(int signo) {
+  LOG(DEBUG, "thread %lu will exit", pthread_self()%100);
+  pthread_exit(NULL);
 }
 
 static int init_server_socket(const char *host, uint16_t port) {
@@ -135,12 +150,12 @@ static int init_server_socket(const char *host, uint16_t port) {
   strcpy(arg->ip_str, ip_str);
 
   // create a accept thread to accept connect from client,
-  // and it will create rdma_transport_server (or it is existing?)
+  // and it will create server (or it is existing?)
   create_thread(accept_thread, arg);
 
 
   for (int i=0; i<MAX_POLL_THREAD; i++) {
-    create_thread(poll_thread, g_rdma_context->cq[i]);
+    g_rdma_context->pid[i] = create_thread(poll_thread, g_rdma_context->comp_channel[i]);
   }
   LOG(DEBUG, "create %d poll thread", MAX_POLL_THREAD);
 
@@ -204,43 +219,59 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
 }
 
 static void *poll_thread(void *arg) {
-  struct ibv_cq *cq = (struct ibv_cq *)arg;
-  GPR_ASSERT(cq);
+  struct ibv_comp_channel *channel = (struct ibv_comp_channel *)arg;
+  GPR_ASSERT(channel);
+
+  // register quit signal
+  signal(SIGQUIT, quit_thread);
 
   int event_num = 0;
+  struct ibv_cq *cq;
+  void *ev_ctx;
   struct ibv_wc wc[MAX_EVENT_PER_POLL];
 
-  volatile int poll_loop = 1;
-  while (poll_loop) {
-    event_num = 0;
-    LOG(DEBUG, "begin poll");
-    while (!event_num) {
-      event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
+  while (1) {
+    LOG(DEBUG, "begin blocking ibv_get_cq_event");
+    if (ibv_get_cq_event(channel, &cq, &ev_ctx) < 0) {
+      LOG(ERROR, "ibv_get_cq_event error, %s", strerror(errno));
+      abort();
     }
-    LOG(DEBUG, "poll %d", event_num);
+    LOG(DEBUG, "get event");
 
-    if (event_num < 0) {
-      LOG(ERROR, "ibv_poll_cq poll error");
-    } else {
-      for (int i=0; i<event_num; i++) {
-        if (wc[i].status != IBV_WC_SUCCESS) {
-          LOG(ERROR, "ibv_wc.status error %d", wc[i].status);
-          abort();
-        } else {
-          if (wc[i].opcode == IBV_WC_SEND) {
-            LOG(DEBUG, "handle a send event begin");
-            handle_send_event(&wc[i]);
-            LOG(DEBUG, "handle a send event end");
-          } else if (wc[i].opcode == IBV_WC_RECV) {
-            LOG(DEBUG, "handle a recv event begin");
-            handle_recv_event(&wc[i]);
-            LOG(DEBUG, "handle a recv event end");
+    ibv_ack_cq_events(cq, 1);
+
+    if (ibv_req_notify_cq(cq, 0) < 0) {
+      LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
+      abort();
+    }
+
+    do {
+      event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
+      LOG(DEBUG, "poll %d event", event_num);
+
+      if (event_num < 0) {
+        LOG(ERROR, "ibv_poll_cq poll error");
+      } else {
+        for (int i=0; i<event_num; i++) {
+          if (wc[i].status != IBV_WC_SUCCESS) {
+            LOG(ERROR, "ibv_wc.status error %d", wc[i].status);
+            abort();
           } else {
-            LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
+            if (wc[i].opcode == IBV_WC_SEND) {
+              LOG(DEBUG, "handle a send event begin");
+              handle_send_event(&wc[i]);
+              LOG(DEBUG, "handle a send event end");
+            } else if (wc[i].opcode == IBV_WC_RECV) {
+              LOG(DEBUG, "handle a recv event begin");
+              handle_recv_event(&wc[i]);
+              LOG(DEBUG, "handle a recv event end");
+            } else {
+              LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
+            }
           }
         }
       }
-    }
+    } while (event_num);
   }
   return NULL;
 }
@@ -266,7 +297,7 @@ static void handle_recv_event(struct ibv_wc *wc) {
   }
 
   // 目前设计只会有一个线程对chache操作
-  // cache只是起着缓冲作用，向线程池提交的参数是可变长数组
+  // 向线程池提交的参数是可变长数组
   varray_t *now = server->recvk_array;
   if (now == NULL) {
     // free after channelRead0

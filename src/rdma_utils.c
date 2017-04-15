@@ -45,10 +45,16 @@ int rdma_context_init() {
   g_rdma_context->pd = ibv_alloc_pd(g_rdma_context->context);
   GPR_ASSERT(g_rdma_context->pd);
 
-  for (int i = 0; i < MAX_POLL_THREAD; i++) {
-    g_rdma_context->cq[i] = ibv_create_cq(g_rdma_context->context, MAX_CQE + 1, NULL, NULL, 0);
+  for (int i=0; i<MAX_POLL_THREAD; i++) {
+    g_rdma_context->comp_channel[i] = ibv_create_comp_channel(g_rdma_context->context);
+    GPR_ASSERT(g_rdma_context->comp_channel[i]);
+    g_rdma_context->cq[i] = ibv_create_cq(g_rdma_context->context, MAX_CQE*2 + 1,
+                                          NULL, g_rdma_context->comp_channel[i], 0);
     GPR_ASSERT(g_rdma_context->cq[i]);
-    LOG(DEBUG, "cq_id: %d cq:%p", i, g_rdma_context->cq[i]);
+    if (ibv_req_notify_cq(g_rdma_context->cq[i], 0) < 0) {
+      LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
+      abort();
+    }
   }
 
   pthread_mutex_init(&g_rdma_context->cq_lock, NULL);
@@ -58,7 +64,6 @@ int rdma_context_init() {
   GPR_ASSERT(g_rdma_context->rbp);
   if (init_rdma_buffer_pool(g_rdma_context->rbp, g_rdma_context->pd) < 0) {
     LOG(ERROR, "failed to initiate buffer pool");
-    rdma_context_destroy(g_rdma_context);
     abort();
   }
 
@@ -75,8 +80,11 @@ void rdma_context_destroy(struct rdma_context *context)
 
   for (int i=0; i<MAX_POLL_THREAD; i++) {
     GPR_ASSERT(context->cq[i]);
+    GPR_ASSERT(context->comp_channel[i]);
     ibv_destroy_cq(context->cq[i]);
+    ibv_destroy_comp_channel(context->comp_channel[i]);
     context->cq[i] = NULL;
+    context->comp_channel[i] = NULL;
   }
   pthread_mutex_destroy(&context->cq_lock);
 

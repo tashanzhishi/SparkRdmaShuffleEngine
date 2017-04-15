@@ -10,7 +10,7 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 1024
-#define MAX_PRE_RECV_QP 4
+#define MAX_PRE_RECV_QP 512
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 8
@@ -26,13 +26,20 @@ struct qp_attr {
 struct rdma_context {
   struct ibv_context *context;
   struct ibv_pd *pd;
-  struct ibv_cq *cq[MAX_POLL_THREAD];
+
   int cq_num;
   pthread_mutex_t cq_lock;
+  struct ibv_cq *cq[MAX_POLL_THREAD];
+  struct ibv_comp_channel *comp_channel[MAX_POLL_THREAD];
+  pthread_t pid[MAX_POLL_THREAD];
+
   struct rdma_buffer_pool *rbp;
+
   GHashTable *hash_table;
   pthread_mutex_t hash_lock;
+
   GThreadPool *thread_pool;
+
   int sfd;
 };
 

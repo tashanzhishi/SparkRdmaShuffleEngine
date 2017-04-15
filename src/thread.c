@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-void create_thread(thread_func func, void *arg) {
+pthread_t create_thread(thread_func func, void *arg) {
   pthread_t thread;
   pthread_attr_t attr;
   int ret;
@@ -13,4 +13,5 @@ void create_thread(thread_func func, void *arg) {
     LOG(ERROR, "Can't create thread: %s", strerror(ret));
     abort();
   }
+  return thread;
 }

@@ -13,6 +13,6 @@
 
 typedef void * (*thread_func)(void *);
 
-void create_thread(thread_func func, void *arg);
+pthread_t create_thread(thread_func func, void *arg);
 
 #endif /* THREAD_H_ */
