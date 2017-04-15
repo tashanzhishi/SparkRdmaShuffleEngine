@@ -201,7 +201,7 @@ static void *accept_thread(void *arg) {
       LOG(ERROR, "server exchange information failed");
       abort();
     }
-    rdma_complete_connect(server);
+    //rdma_complete_connect(server);
   }
 
   free(arg);

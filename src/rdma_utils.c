@@ -117,7 +117,8 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
   transport->local_qp_attr.gid_global_subnet_prefix = gid.global.subnet_prefix;
   transport->local_qp_attr.lid = get_local_lid(g_rdma_context->context);
   transport->local_qp_attr.qpn = transport->rc_qp->qp_num;
-  transport->local_qp_attr.psn = rand() & 0xffffff;
+  //transport->local_qp_attr.psn = rand() & 0xffffff;
+  transport->local_qp_attr.psn = 0;
 
   if (is_client) {
     if (write(sfd, &transport->local_qp_attr, sizeof(struct qp_attr)) < 0) {
@@ -133,6 +134,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
       LOG(ERROR, "server exchange_info: failed to read information");
       return -1;
     }
+    rdma_complete_connect(transport);
     if (write(sfd, &transport->local_qp_attr, sizeof(struct qp_attr)) < 0) {
       LOG(ERROR, "server exchange_info: failed to write information");
       return -1;
@@ -153,7 +155,7 @@ int rdma_create_connect(struct rdma_transport *transport) {
   transport->cq = cq;
 
   struct ibv_qp_init_attr init_attr = {
-      .qp_type = IBV_QPT_UC,
+      .qp_type = IBV_QPT_RC,
       .sq_sig_all = 0,
       .send_cq = cq,
       .recv_cq = cq,
@@ -247,7 +249,7 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
     LOG(ERROR, "ibv_post_send error, %s", strerror(errno));
     return -1;
   }
-  LOG(DEBUG, "%p post send %u byte", transport->rc_qp, send_wc->len+RDMA_HEADER_SIZE);
+  LOG(DEBUG, "post send %u byte", send_wc->len+RDMA_HEADER_SIZE);
 
   return 0;
 }
@@ -339,8 +341,12 @@ static int modify_qp_to_rts(struct rdma_transport *transport) {
   struct ibv_qp_attr rts_attr;
   memset(&rts_attr, 0, sizeof(rts_attr));
   rts_attr.qp_state = IBV_QPS_RTS;
+  rts_attr.timeout  = 0x14;
+  rts_attr.retry_cnt = 0x7;
+  rts_attr.rnr_retry = 0x7;
   rts_attr.sq_psn   = transport->local_qp_attr.psn;
-  int rts_flags = IBV_QP_STATE | IBV_QP_SQ_PSN;
+
+  int rts_flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY;
   if (ibv_modify_qp(transport->rc_qp, &rts_attr, rts_flags) < 0) {
     LOG(ERROR, "modify QP to RTS error, %s", strerror(errno));
     return -1;
@@ -353,6 +359,7 @@ static int modify_qp_to_rtr(struct rdma_transport *transport) {
   memset(&rtr_attr, 0, sizeof(rtr_attr));
   rtr_attr.qp_state = IBV_QPS_RTR;
   rtr_attr.path_mtu = IBV_MTU_4096;
+  rtr_attr.min_rnr_timer = 0x12;
   rtr_attr.dest_qp_num = transport->remote_qp_attr.qpn;
   rtr_attr.rq_psn = transport->remote_qp_attr.psn;
   rtr_attr.ah_attr.is_global = 0;
@@ -360,7 +367,7 @@ static int modify_qp_to_rtr(struct rdma_transport *transport) {
   rtr_attr.ah_attr.sl = 0;
   rtr_attr.ah_attr.src_path_bits = 0;
   rtr_attr.ah_attr.port_num = IB_PORT_NUM;
-  int rtr_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
+  int rtr_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MIN_RNR_TIMER;
   if (ibv_modify_qp(transport->rc_qp, &rtr_attr, rtr_flags) < 0) {
     LOG(ERROR, "modify QP to RTS error, %s", strerror(errno));
     return -1;
