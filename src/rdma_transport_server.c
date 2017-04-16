@@ -19,6 +19,8 @@
 #include "rdma_utils.h"
 #include "thread.h"
 
+#include "jni_common.h"
+
 
 extern struct rdma_context *g_rdma_context;
 
@@ -358,6 +360,18 @@ static void work_thread(gpointer data, gpointer user_data) {
 
   // test
   struct rdma_transport *server = varray->transport;
+
+  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
+      data_len, varray->data_id, server->remote_ip);
+
+  jbyteArray jba = jni_alloc_byte_array(data_len);
+  int pos = 0;
+  for (uint32_t i=0; i<varray->size; i++) {
+    set_byte_array_region(jba, pos, varray->data[i]->header.chunk_len, varray->data[i]->body);
+    pos += varray->data[i]->header.chunk_len;
+  }
+  jni_channel_callback(server->remote_ip, jba, data_len);
+
   LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
       data_len, varray->data_id, server->remote_ip);
   //LOG(DEBUG, "message: %s", varray->data[0]->body);
@@ -366,5 +380,4 @@ static void work_thread(gpointer data, gpointer user_data) {
   }
   free(varray);
   LOG(DEBUG, "work thread success");
-  //usleep(100);
 }

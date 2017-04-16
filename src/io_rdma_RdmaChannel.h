@@ -10,18 +10,18 @@ extern "C" {
 /*
  * Class:     io_rdma_RdmaChannel
  * Method:    sendHeader
- * Signature: (Ljava/lang/String;Ljava/nio/ByteBuffer;ILio/rdma/RdmaSendCallback;)V
+ * Signature: (Ljava/lang/String;ILjava/nio/ByteBuffer;ILio/rdma/RdmaSendCallback;)V
  */
 JNIEXPORT void JNICALL Java_io_rdma_RdmaChannel_sendHeader
-    (JNIEnv *, jobject, jstring, jobject, jint, jobject);
+    (JNIEnv *, jobject, jstring, jint, jobject, jint, jobject);
 
 /*
  * Class:     io_rdma_RdmaChannel
  * Method:    sendHeaderWithBody
- * Signature: (Ljava/lang/String;Ljava/nio/ByteBuffer;ILjava/nio/ByteBuffer;JLio/rdma/RdmaSendCallback;)V
+ * Signature: (Ljava/lang/String;ILjava/nio/ByteBuffer;ILjava/nio/ByteBuffer;JLio/rdma/RdmaSendCallback;)V
  */
 JNIEXPORT void JNICALL Java_io_rdma_RdmaChannel_sendHeaderWithBody
-    (JNIEnv *, jobject, jstring, jobject, jint, jobject, jlong, jobject);
+    (JNIEnv *, jobject, jstring, jint, jobject, jint, jobject, jlong, jobject);
 
 #ifdef __cplusplus
 }

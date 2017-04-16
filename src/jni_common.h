@@ -7,7 +7,8 @@
 
 #include <jni.h>
 
-void jni_channel_callback(char *remote_hsot, jobject msg, int len);
-void *jni_alloc_byte_array(jbyteArray *jba, int bytes);
+void jni_channel_callback(char *remote_host, jobject msg, int len);
+jbyteArray jni_alloc_byte_array(int bytes);
+void set_byte_array_region(jbyteArray jba, int pos, int len, unsigned char *buf);
 
 #endif //JNI_COMMON_H
