@@ -9,7 +9,7 @@
 #include <infiniband/verbs.h>
 
 
-#define RDMA_CHUNK_SIZE	  4096
+#define RDMA_CHUNK_SIZE	  (4096-40)
 #define RDMA_BUFFER_SIZE  256
 #define RDMA_BUF_FLAG     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE)
 

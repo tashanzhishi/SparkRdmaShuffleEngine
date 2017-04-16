@@ -29,6 +29,8 @@ struct accept_arg {
   uint16_t port;
 };
 
+static int connid[MAX_POLL_THREAD];
+
 
 static int create_transport_server(const char *ip_str, uint16_t port);
 static int init_server_socket(const char *host, uint16_t port);
@@ -45,6 +47,9 @@ static void quit_thread(int signo);
 
 int init_server(const char *host, uint16_t port) {
   rdma_context_init();
+
+  for (int i=0; i<MAX_POLL_THREAD; i++)
+    connid[i] = i;
 
   if (init_server_socket(host, port) < 0) {
     LOG(ERROR, "init_server_socket failed");
@@ -153,9 +158,8 @@ static int init_server_socket(const char *host, uint16_t port) {
   // and it will create server (or it is existing?)
   create_thread(accept_thread, arg);
 
-
   for (int i=0; i<MAX_POLL_THREAD; i++) {
-    g_rdma_context->pid[i] = create_thread(poll_thread, g_rdma_context->comp_channel[i]);
+    g_rdma_context->pid[i] = create_thread(poll_thread, &connid[i]);
   }
   LOG(DEBUG, "create %d poll thread", MAX_POLL_THREAD);
 
@@ -186,7 +190,6 @@ static void *accept_thread(void *arg) {
     memcpy(&client_addr, &addr, sizeof(addr));
     strcpy(remote_ip, inet_ntoa(client_addr.sin_addr));
     LOG(DEBUG, "%s accept %s, fd=%d", local_ip, remote_ip, fd);
-    //strcpy(remote_ip, "172.18.0.11");
 
     struct rdma_transport *server = get_transport_from_ip(remote_ip, info->port, create_transport_server);
     GPR_ASSERT(server);
@@ -219,28 +222,32 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
 }
 
 static void *poll_thread(void *arg) {
-  struct ibv_comp_channel *channel = (struct ibv_comp_channel *)arg;
+  int id = *(int *)arg;
+  LOG(DEBUG, "poll thread %d", id);
+  struct ibv_comp_channel *channel = g_rdma_context->comp_channel[id];
+  struct ibv_cq *cq = g_rdma_context->cq[id];
   GPR_ASSERT(channel);
+  GPR_ASSERT(cq);
 
   // register quit signal
   signal(SIGQUIT, quit_thread);
 
   int event_num = 0;
-  struct ibv_cq *cq;
+  struct ibv_cq *ev_cq;
   void *ev_ctx;
   struct ibv_wc wc[MAX_EVENT_PER_POLL];
 
   while (1) {
     LOG(DEBUG, "begin blocking ibv_get_cq_event");
-    if (ibv_get_cq_event(channel, &cq, &ev_ctx) < 0) {
+    if (ibv_get_cq_event(channel, &ev_cq, &ev_ctx) < 0) {
       LOG(ERROR, "ibv_get_cq_event error, %s", strerror(errno));
       abort();
     }
-    LOG(DEBUG, "get event");
+    LOG(DEBUG, "get event, ev_cq %p, cq %p", ev_cq, cq);
 
     ibv_ack_cq_events(cq, 1);
 
-    if (ibv_req_notify_cq(cq, 0) < 0) {
+    if (ibv_req_notify_cq(ev_cq, 0) < 0) {
       LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
       abort();
     }
@@ -297,7 +304,7 @@ static void handle_recv_event(struct ibv_wc *wc) {
   }
 
   // 目前设计只会有一个线程对chache操作
-  // 向线程池提交的参数是可变长数组
+  // cache只是起着缓冲作用，向线程池提交的参数是可变长数组
   varray_t *now = server->recvk_array;
   if (now == NULL) {
     // free after channelRead0

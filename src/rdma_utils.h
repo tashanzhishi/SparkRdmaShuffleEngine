@@ -7,17 +7,17 @@
 #include "rdma_buffer_pool.h"
 #include "rdma_log.h"
 
-#define MAX_POLL_THREAD 4
+#define MAX_POLL_THREAD 5
 #define IB_PORT_NUM 1
 #define MAX_CQE 1024
-#define MAX_PRE_RECV_QP 512
+#define MAX_PRE_RECV_QP 256
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
-#define THREAD_POOL_SIZE 8
+#define THREAD_POOL_SIZE 10
 
 struct qp_attr {
-  uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
-  uint64_t gid_global_subnet_prefix; 	// don't like unions. Needed for RoCE only
+  //uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
+  //uint64_t gid_global_subnet_prefix; 	// don't like unions. Needed for RoCE only
   uint16_t lid;                       // A queue pair is identified by the local id (lid)
   uint32_t qpn;                       // of the device port and its queue pair number (qpn)
   uint32_t psn;
