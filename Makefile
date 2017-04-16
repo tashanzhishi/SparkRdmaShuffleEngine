@@ -1,9 +1,9 @@
-STATIC  := ./lib/libspark_rdma.a
+SHARE  := ./lib/libSparkRdma.so
 
 CC      := gcc
 AR      := ar
 RANLIB  := ranlib
-LDFLAGS := 
+LDFLAGS :=
 LIBS    := -lpthread -libverbs $(shell pkg-config --libs glib-2.0) $(shell pkg-config --libs gthread-2.0)
 CFLAGS  := -Wall $(shell pkg-config --cflags glib-2.0) $(shell pkg-config --cflags gthread-2.0)
 
@@ -17,30 +17,18 @@ OBJS    := $(patsubst %.c, $(OBJ_DIR)/%.o, $(notdir $(SOURCES)))
 #$(warning $(OBJS))
 
 
-#all : $(SHARE)
-all : $(STATIC)
+all : $(SHARE)
 
-$(OBJ_DIR)/%.o : $(SRC_DIR)/%.c
-#	$(CC) $(CFLAGS) -fpic -c $< -o $@ $(LDFLAGS) $(LIBS)
-	$(CC) $(CFLAGS) -c $< -o $@ $(LDFLAGS) $(LIBS)
-
-$(STATIC) : $(OBJS)
-	$(AR) cru $(STATIC) $(OBJS)
-	$(RANLIB) $(STATIC)
-
-#$(SHARE) : $(OBJS)
-#	gcc -shared -o $@ $(OBJS)
-#	$(CC) $(CFLAGS) $(SHARE_FLAGS) $@ $(OBJS) $(LDFLAGS) $(LIBS)
+$(SHARE) : $(SOURCES)
+        $(CC) $(CFLAGS) $(SOURCES) -fPIC -shared -o $(SHARE) $(LIBS)
 
 install:
-#	cp $(SHARE) /usr/lib/
-	cp $(STATIC) /usr/lib/
+        cp $(SHARE) /usr/lib/
 
 uninstall:
-#	rm -f /usr/lib/libspark_rdma.so
-	rm -f /usr/lib/libspark_rdma.a
+        rm -f /usr/lib/libsparkrdma.so
 
 .PHONY : clean
 
 clean :
-	rm -f $(OBJS) $(SHARE) $(STATIC)
+        rm -f $(OBJS) $(SHARE)
