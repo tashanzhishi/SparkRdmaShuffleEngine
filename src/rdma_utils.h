@@ -50,11 +50,13 @@ struct rdma_transport {
   struct ibv_qp  *rc_qp;
   struct ibv_cq  *cq;
 
+
   char local_ip[IP_CHAR_SIZE];
   char remote_ip[IP_CHAR_SIZE];
   // for client
   uint32_t data_id;
   // for server
+  GHashTable *cache;
   void *recvk_array;
 };
 

@@ -137,21 +137,22 @@ static void rdma_send_msg(varray_t *chunk_array, uint32_t len) {
 
 static void copy_msg_to_rdma(varray_t *chunk_array, uint8_t *msg, uint32_t len) {
   LOG(DEBUG, "copy %u chunks %u byte to rdma", chunk_array->size, len);
-  uint32_t copy_len = 0;
+  uint32_t copy_len = 0, now_len = len;
   uint32_t data_id = chunk_array->data_id;
   uint32_t chunk_num = chunk_array->size;
   uint8_t *now = msg;
   struct rdma_chunk *chunk = NULL;
   for (uint32_t i=0; i<chunk_num; i++) {
     chunk = chunk_array->data[i];
-    copy_len = (len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : len);
+    copy_len = (now_len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : now_len);
     chunk->header.data_id = data_id;
     chunk->header.chunk_num = chunk_num;
     chunk->header.flags = 0;
     chunk->header.chunk_len = copy_len;
+    chunk->header.data_len = len;
     memcpy(chunk->body, now, copy_len);
     now += copy_len;
-    len -= RDMA_BODY_SIZE;
+    now_len -= RDMA_BODY_SIZE;
   }
 }
 
@@ -162,15 +163,16 @@ static void copy_header_and_body_to_rdma(varray_t *chunk_array, uint8_t *header,
   struct rdma_chunk *chunk = NULL;
   int is_header = 1;
   uint32_t len = head_len + body_len;
-  uint32_t copy_len = 0;
+  uint32_t copy_len = 0, now_len = len;
   uint8_t *now = header;
   for (uint32_t i=0; i<chunk_num; i++) {
     chunk = chunk_array->data[i];
-    copy_len = (len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : len);
+    copy_len = (now_len > RDMA_BODY_SIZE ? RDMA_BODY_SIZE : now_len);
     chunk->header.data_id = data_id;
     chunk->header.chunk_num = chunk_num;
     chunk->header.flags = 0;
     chunk->header.chunk_len = copy_len;
+    chunk->header.data_len = len;
 
     if (is_header) {
       if (head_len < RDMA_BODY_SIZE) {
@@ -190,7 +192,7 @@ static void copy_header_and_body_to_rdma(varray_t *chunk_array, uint8_t *header,
       now += copy_len;
     }
 
-    len -= copy_len;
+    now_len -= copy_len;
   }
 }
 

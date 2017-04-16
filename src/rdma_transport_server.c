@@ -42,6 +42,8 @@ static void handle_send_event(struct ibv_wc *wc);
 static void handle_recv_event(struct ibv_wc *wc);
 static void work_thread(gpointer data, gpointer user_data);
 
+static void free_data(gpointer kv);
+
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data);
 static void quit_thread(int signo);
 
@@ -89,7 +91,6 @@ void destroy_server() {
   }
 
   rdma_context_destroy(g_rdma_context);
-  sleep(1);
 }
 
 
@@ -100,6 +101,11 @@ void destroy_server() {
 
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data) {
   struct rdma_transport *transport = (struct rdma_transport *)value;
+
+  if (transport->cache != NULL) {
+    g_hash_table_destroy(transport->cache);
+  }
+
   rdma_shutdown_connect(transport);
 }
 
@@ -195,7 +201,6 @@ static void *accept_thread(void *arg) {
 
     struct rdma_transport *server = get_transport_from_ip(remote_ip, info->port, create_transport_server);
     GPR_ASSERT(server);
-    LOG(DEBUG, "server %p", server);
 
     strcpy(server->local_ip, local_ip);
     strcpy(server->remote_ip, remote_ip);
@@ -213,6 +218,10 @@ static void *accept_thread(void *arg) {
   return NULL;
 }
 
+// only free key
+static void free_data(gpointer kv) {
+  g_free(kv);
+}
 // a callback function
 static int create_transport_server(const char *ip_str, uint16_t port) {
   struct rdma_transport *server =
@@ -220,6 +229,10 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
   char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE); // should not free yourself
   strcpy(remote_ip_str, ip_str);
   g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, server);
+
+  // (data_id, varray) (int64_t*, varray_t *)
+  server->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_data, NULL);
+
   return 0;
 }
 
@@ -245,7 +258,6 @@ static void *poll_thread(void *arg) {
       LOG(ERROR, "ibv_get_cq_event error, %s", strerror(errno));
       abort();
     }
-    LOG(DEBUG, "get event, ev_cq %p, cq %p", ev_cq, cq);
 
     ibv_ack_cq_events(cq, 1);
 
@@ -267,13 +279,13 @@ static void *poll_thread(void *arg) {
             abort();
           } else {
             if (wc[i].opcode == IBV_WC_SEND) {
-              LOG(DEBUG, "handle a send event begin");
+              //LOG(DEBUG, "handle a send event begin");
               handle_send_event(&wc[i]);
-              LOG(DEBUG, "handle a send event end");
+              //LOG(DEBUG, "handle a send event end");
             } else if (wc[i].opcode == IBV_WC_RECV) {
-              LOG(DEBUG, "handle a recv event begin");
+              //LOG(DEBUG, "handle a recv event begin");
               handle_recv_event(&wc[i]);
-              LOG(DEBUG, "handle a recv event end");
+              //LOG(DEBUG, "handle a recv event end");
             } else {
               LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
             }
@@ -306,40 +318,49 @@ static void handle_recv_event(struct ibv_wc *wc) {
   }
 
   // 目前设计只会有一个线程对chache操作
-  // cache只是起着缓冲作用，向线程池提交的参数是可变长数组
-  varray_t *now = server->recvk_array;
+  // cache根据data_id缓冲，向线程池提交的参数是value可变长数组
+  int64_t data_id = (int64_t)chunk->header.data_id;
+  varray_t *now = g_hash_table_lookup(server->cache, &data_id);
   if (now == NULL) {
-    // free after channelRead0
+    // free by worker, donot free by this function and hash table
     now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
     GPR_ASSERT(now);
+
+    //test
+    LOG(INFO, "malloc a cache %p", now);
+
     now->transport = server;
     now->data_id = chunk->header.data_id;
     now->size = chunk->header.chunk_num;
     now->data[now->len++] = chunk;
-    server->recvk_array = now;
+    // key free by hash table
+    int64_t *key = (int64_t *)malloc(sizeof(int64_t));
+    *key = data_id;
+    g_hash_table_insert(server->cache, key, now);
 
     for (int i=0; i<now->size; i++) {
       rdma_transport_recv(server);
     }
-  } else if (now->data_id == chunk->header.data_id) {
+  } else {
     if (now->len >= now->size) {
       LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) when push chunk, len >= size (%u, %u)",
           server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num, now->len, now->size);
       abort();
     }
+    if (now->data_id != chunk->header.data_id) {
+      LOG(ERROR, "%s --> %s, data_id: %u != %u",
+          server->remote_ip, server->local_ip, now->data_id, chunk->header.data_id);
+      abort();
+    }
     now->data[now->len++] = chunk;
-  } else if (now->data_id != chunk->header.data_id) {
-    LOG(ERROR, "remote_ip:%s local_ip:%s, data_id: %u != %u",
-        server->remote_ip, server->local_ip, now->data_id, chunk->header.data_id);
-    abort();
-  } else {
-    LOG(ERROR, "remote_ip:%s local_ip:%s, unknown error", server->remote_ip, server->local_ip);
-    abort();
   }
+
+  GPR_ASSERT(now);
   if (now->len == now->size) {
     LOG(DEBUG, "push a data to thread pool");
+    LOG(INFO, "%s push a cache data %u from %s", server->local_ip, now->data_id, server->remote_ip);
     g_thread_pool_push(g_rdma_context->thread_pool, now, NULL);
-    server->recvk_array = NULL;
+    g_hash_table_remove(server->cache, &data_id); // only free key
   }
   free(work_chunk);
 }
@@ -354,11 +375,14 @@ static void work_thread(gpointer data, gpointer user_data) {
     abort();
   }
   uint32_t data_len = 0;
+  uint32_t len = varray->data[0]->header.data_len;
+  uint32_t data_id = varray->data_id;
   for (uint32_t i=0; i<varray->size; i++) {
+    GPR_ASSERT(data_id == varray->data[i]->header.data_id);
     data_len += varray->data[i]->header.chunk_len;
   }
+  GPR_ASSERT(len == data_len);
 
-  // test
   struct rdma_transport *server = varray->transport;
 
   LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
@@ -372,12 +396,9 @@ static void work_thread(gpointer data, gpointer user_data) {
   }
   jni_channel_callback(server->remote_ip, jba, data_len);
 
-  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
-      data_len, varray->data_id, server->remote_ip);
-  //LOG(DEBUG, "message: %s", varray->data[0]->body);
   for (uint32_t i=0; i<varray->size; i++) {
     release_rdma_chunk_to_pool(g_rdma_context->rbp, varray->data[i]);
   }
   free(varray);
-  LOG(DEBUG, "work thread success");
+  LOG(INFO, "work thread success");
 }

@@ -129,7 +129,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
       LOG(ERROR, "client exchange_info: failed to write information");
       return -1;
     }
-    LOG(DEBUG, "%s lid = %u, qpn = %u", transport->local_ip, transport->local_qp_attr.lid, transport->local_qp_attr.qpn);
+    //LOG(DEBUG, "%s lid = %u, qpn = %u", transport->local_ip, transport->local_qp_attr.lid, transport->local_qp_attr.qpn);
 
     if (read(sfd, &tmp, sizeof(struct qp_attr)) < 0) {
       LOG(ERROR, "client exchange_info: failed to read information");
@@ -138,7 +138,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
     transport->remote_qp_attr.lid = ntohs(tmp.lid);
     transport->remote_qp_attr.qpn = ntohl(tmp.qpn);
     transport->remote_qp_attr.psn = ntohl(tmp.psn);
-    LOG(DEBUG, "%s lid = %u, qpn = %u", transport->remote_ip, transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn);
+    //LOG(DEBUG, "%s lid = %u, qpn = %u", transport->remote_ip, transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn);
   } else {
     if (read(sfd, &tmp, sizeof(struct qp_attr)) < 0) {
       LOG(ERROR, "server exchange_info: failed to read information");
@@ -147,7 +147,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
     transport->remote_qp_attr.lid = ntohs(tmp.lid);
     transport->remote_qp_attr.qpn = ntohl(tmp.qpn);
     transport->remote_qp_attr.psn = ntohl(tmp.psn);
-    LOG(DEBUG, "%s lid = %u, qpn = %u", transport->remote_ip, transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn);
+    //LOG(DEBUG, "%s lid = %u, qpn = %u", transport->remote_ip, transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn);
     rdma_complete_connect(transport);
 
     tmp.lid = htons(transport->local_qp_attr.lid);
@@ -157,7 +157,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
       LOG(ERROR, "server exchange_info: failed to write information");
       return -1;
     }
-    LOG(DEBUG, "%s lid = %u, qpn = %u", transport->local_ip, transport->local_qp_attr.lid, transport->local_qp_attr.qpn);
+    //LOG(DEBUG, "%s lid = %u, qpn = %u", transport->local_ip, transport->local_qp_attr.lid, transport->local_qp_attr.qpn);
   }
 
   LOG(DEBUG, "exchange_info end");
@@ -201,7 +201,7 @@ int rdma_create_connect(struct rdma_transport *transport) {
       abort();
     }
   }
-  LOG(DEBUG, "rdma_create_connect end cq: %p, qp: %p", cq, transport->rc_qp);
+  LOG(DEBUG, "rdma_create_connect end");
   return 0;
 }
 
@@ -224,11 +224,11 @@ void rdma_shutdown_connect(struct rdma_transport *transport) {
     abort();
   }
   transport->rc_qp = NULL;
+
   LOG(DEBUG, "shutdown connect");
 }
 
 int rdma_transport_recv(struct rdma_transport *transport) {
-  LOG(DEBUG, "post a recv");
   struct rdma_work_chunk *recv_wc = (struct rdma_work_chunk *)malloc(sizeof(struct rdma_work_chunk));
   GPR_ASSERT(recv_wc);
   recv_wc->chunk = get_rdma_chunk_from_pool(g_rdma_context->rbp);
@@ -277,7 +277,7 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
     LOG(ERROR, "ibv_post_send error, %s", strerror(errno));
     return -1;
   }
-  LOG(DEBUG, "post send %u byte", send_wc->len+RDMA_HEADER_SIZE);
+  //LOG(DEBUG, "post send %u byte", send_wc->len+RDMA_HEADER_SIZE);
 
   return 0;
 }
@@ -397,7 +397,6 @@ static int modify_qp_to_rtr(struct rdma_transport *transport) {
   rtr_attr.ah_attr.sl = 0;
   rtr_attr.ah_attr.src_path_bits = 0;
   rtr_attr.ah_attr.port_num = IB_PORT_NUM;
-  LOG(DEBUG, "%u %u %u", transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn, transport->remote_qp_attr.psn);
 
   int rtr_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
       IBV_QP_RQ_PSN | IBV_QP_MIN_RNR_TIMER | IBV_QP_MAX_DEST_RD_ATOMIC;
