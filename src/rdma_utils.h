@@ -9,8 +9,8 @@
 
 #define MAX_POLL_THREAD 5
 #define IB_PORT_NUM 1
-#define MAX_CQE 1024
-#define MAX_PRE_RECV_QP 256
+#define MAX_CQE 2048
+#define MAX_PRE_RECV_QP 1024
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 10

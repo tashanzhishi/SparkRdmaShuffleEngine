@@ -42,8 +42,6 @@ static void handle_send_event(struct ibv_wc *wc);
 static void handle_recv_event(struct ibv_wc *wc);
 static void work_thread(gpointer data, gpointer user_data);
 
-static void free_data(gpointer kv);
-
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data);
 static void quit_thread(int signo);
 
@@ -101,11 +99,6 @@ void destroy_server() {
 
 static void shutdown_qp(gpointer key, gpointer value ,gpointer user_data) {
   struct rdma_transport *transport = (struct rdma_transport *)value;
-
-  if (transport->cache != NULL) {
-    g_hash_table_destroy(transport->cache);
-  }
-
   rdma_shutdown_connect(transport);
 }
 
@@ -199,6 +192,8 @@ static void *accept_thread(void *arg) {
     strcpy(remote_ip, inet_ntoa(client_addr.sin_addr));
     LOG(DEBUG, "%s accept %s, fd=%d", local_ip, remote_ip, fd);
 
+    if (g_hash_table_lookup(g_rdma_context->hash_table, remote_ip) != NULL)
+      continue;
     struct rdma_transport *server = get_transport_from_ip(remote_ip, info->port, create_transport_server);
     GPR_ASSERT(server);
 
@@ -218,10 +213,6 @@ static void *accept_thread(void *arg) {
   return NULL;
 }
 
-// only free key
-static void free_data(gpointer kv) {
-  g_free(kv);
-}
 // a callback function
 static int create_transport_server(const char *ip_str, uint16_t port) {
   struct rdma_transport *server =
@@ -229,9 +220,6 @@ static int create_transport_server(const char *ip_str, uint16_t port) {
   char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE); // should not free yourself
   strcpy(remote_ip_str, ip_str);
   g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, server);
-
-  // (data_id, varray) (int64_t*, varray_t *)
-  server->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_data, NULL);
 
   return 0;
 }
@@ -272,6 +260,7 @@ static void *poll_thread(void *arg) {
 
       if (event_num < 0) {
         LOG(ERROR, "ibv_poll_cq poll error");
+        abort();
       } else {
         for (int i=0; i<event_num; i++) {
           if (wc[i].status != IBV_WC_SUCCESS) {
@@ -288,6 +277,7 @@ static void *poll_thread(void *arg) {
               //LOG(DEBUG, "handle a recv event end");
             } else {
               LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
+              abort();
             }
           }
         }
@@ -374,6 +364,7 @@ static void work_thread(gpointer data, gpointer user_data) {
     LOG(ERROR, "varray len != size (%u, %u)", varray->len, varray->size);
     abort();
   }
+
   uint32_t data_len = 0;
   uint32_t len = varray->data[0]->header.data_len;
   uint32_t data_id = varray->data_id;
@@ -384,6 +375,16 @@ static void work_thread(gpointer data, gpointer user_data) {
   GPR_ASSERT(len == data_len);
 
   struct rdma_transport *server = varray->transport;
+
+  //test
+  char output[310]; uint32_t begin;
+  uint8_t *print = varray->data[0]->body;
+  LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
+  for (begin=0; begin<100 && begin<varray->data[0]->header.chunk_len; begin++) {
+    sprintf(output+(begin*3), "%02x ", print[begin]);
+  }
+  output[begin*3] = '\0';
+  LOG(DEBUG, "%s", output);
 
   LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
       data_len, varray->data_id, server->remote_ip);

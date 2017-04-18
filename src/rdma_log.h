@@ -24,11 +24,11 @@
   do {                                                                               \
     if (level & LOG_FLAGS) {                                                         \
       if (level == ERROR) {                                                          \
-        fprintf(stdout, "[%02lu] [ERROR] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
+        fprintf(stderr, "[%02lu] [ERROR] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } else if (level == DEBUG) {                                                   \
-        fprintf(stdout, "[%02lu] [DEBUG] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
+        fprintf(stderr, "[%02lu] [DEBUG] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } else if (level == INFO) {                                                    \
-        fprintf(stdout, "[%02lu] [ INFO] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);   \
+        fprintf(stderr, "[%02lu] [ INFO] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } \
     }                                                                                \
   } while(0)
@@ -38,7 +38,7 @@
     if (!(x)) {                               \
       LOG(ERROR, "assertion failed: %s", #x); \
       abort();                                \
-      fflush(stdout);                         \
+      fflush(stderr);                         \
     }                                         \
   } while(0)
 

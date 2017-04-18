@@ -168,6 +168,9 @@ int rdma_create_connect(struct rdma_transport *transport) {
   LOG(DEBUG, "rdma_create_connect begin");
   GPR_ASSERT(transport);
 
+  // (data_id, varray) (int64_t*, varray_t *)
+  transport->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_hash_data, NULL);
+
   pthread_mutex_lock(&g_rdma_context->cq_lock);
   struct ibv_cq *cq = g_rdma_context->cq[(g_rdma_context->cq_num++)%MAX_POLL_THREAD];
   pthread_mutex_unlock(&g_rdma_context->cq_lock);
@@ -218,6 +221,10 @@ void rdma_complete_connect(struct rdma_transport *transport) {
 }
 
 void rdma_shutdown_connect(struct rdma_transport *transport) {
+  if (transport->cache != NULL) {
+    g_hash_table_destroy(transport->cache);
+  }
+
   GPR_ASSERT(transport->rc_qp);
   if (ibv_destroy_qp(transport->rc_qp) < 0) {
     LOG(ERROR, "ibv_destroy_qp error, %s", strerror(errno));
@@ -329,7 +336,6 @@ struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
 
 static void free_hash_data(gpointer kv) {
   g_free(kv);
-  kv = NULL;
 }
 
 static union ibv_gid get_gid(struct ibv_context *context) {
