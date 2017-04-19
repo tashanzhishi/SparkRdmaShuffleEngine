@@ -169,7 +169,10 @@ int rdma_create_connect(struct rdma_transport *transport) {
   GPR_ASSERT(transport);
 
   // (data_id, varray) (int64_t*, varray_t *)
-  transport->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_hash_data, NULL);
+  //transport->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_hash_data, NULL);
+  transport->work_queue = g_queue_new();
+  transport->running = 0;
+  pthread_mutex_init(&transport->queue_lock, NULL);
 
   pthread_mutex_lock(&g_rdma_context->cq_lock);
   struct ibv_cq *cq = g_rdma_context->cq[(g_rdma_context->cq_num++)%MAX_POLL_THREAD];
@@ -221,8 +224,9 @@ void rdma_complete_connect(struct rdma_transport *transport) {
 }
 
 void rdma_shutdown_connect(struct rdma_transport *transport) {
-  if (transport->cache != NULL) {
-    g_hash_table_destroy(transport->cache);
+  if (transport->work_queue != NULL) {
+    g_queue_free(transport->work_queue);
+    pthread_mutex_destroy(&transport->queue_lock);
   }
 
   GPR_ASSERT(transport->rc_qp);

@@ -55,7 +55,11 @@ struct rdma_transport {
   char remote_ip[IP_CHAR_SIZE];
   // for client
   uint32_t data_id;
+  pthread_mutex_t id_lock;
   // for server
+  GQueue *work_queue;
+  pthread_mutex_t queue_lock;
+  volatile int running;
   GHashTable *cache;
   void *recvk_array;
 };

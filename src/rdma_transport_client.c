@@ -34,9 +34,10 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
-  uint32_t data_id = client->data_id++;
   GPR_ASSERT(client != NULL);
-
+  pthread_mutex_lock(&client->id_lock);
+  uint32_t data_id = client->data_id++;
+  pthread_mutex_unlock(&client->id_lock);
 
   // wyb test
   char output[310]; uint32_t begin;
@@ -69,7 +70,7 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   GPR_ASSERT(chunk==NULL);
 
   copy_msg_to_rdma(chunk_array, msg, len);
-  LOG(DEBUG, "send_msg: copy msg to rdma success");
+  //LOG(DEBUG, "send_msg: copy msg to rdma success");
 
   // wyb test
   uint8_t *print = chunk_array->data[0]->body;
@@ -81,7 +82,7 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   LOG(DEBUG, "%s", output);
 
   rdma_send_msg(chunk_array, len);
-  LOG(DEBUG, "send_msg: send msg success");
+  //LOG(DEBUG, "send_msg success");
 
   free(chunk_array);
   return 0;
@@ -95,8 +96,10 @@ int send_msg_with_header(const char *host, uint16_t port,
   char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
   set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(remote_ip_str, port, connect_server);
-  uint32_t data_id = client->data_id++;
   GPR_ASSERT(client != NULL);
+  pthread_mutex_lock(&client->id_lock);
+  uint32_t data_id = client->data_id++;
+  pthread_mutex_unlock(&client->id_lock);
 
   //test
   char output[310]; uint32_t begin;
@@ -137,7 +140,7 @@ int send_msg_with_header(const char *host, uint16_t port,
   GPR_ASSERT(chunk==NULL);
 
   copy_header_and_body_to_rdma(chunk_array, header, head_len, body, body_len);
-  LOG(DEBUG, "copy_header_and_body_to_rdma: copy header and body to rdma success");
+  //LOG(DEBUG, "copy_header_and_body_to_rdma: copy header and body to rdma success");
 
   //test
   uint8_t *print = chunk_array->data[0]->body;
@@ -150,7 +153,7 @@ int send_msg_with_header(const char *host, uint16_t port,
   LOG(DEBUG, "%s", output);
 
   rdma_send_msg(chunk_array, len);
-  LOG(DEBUG, "send_msg: send msg success");
+  //LOG(DEBUG, "send_msg success: send %u:%s", chunk_array->data_id, remote_ip_str);
 
   free(chunk_array);
   return 0;
@@ -168,6 +171,8 @@ static void rdma_send_msg(varray_t *chunk_array, uint32_t len) {
   struct rdma_chunk *chunk = NULL;
   uint32_t copy_len = 0;
   struct rdma_work_chunk *send_wc = NULL;
+
+  LOG(DEBUG, "send id %u %s", chunk_array->data_id, transport->remote_ip);
 
   for (int i=0; i<chunk_num; i++) {
     chunk = chunk_array->data[i];
@@ -264,6 +269,8 @@ static int connect_server(const char *ip_str, uint16_t port) {
   struct rdma_transport *client =
       (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
   client->data_id = 0;
+  pthread_mutex_init(&client->id_lock, NULL);
+
   strcpy(client->remote_ip, ip_str);
   char *local_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
   set_local_ip(local_ip_str);

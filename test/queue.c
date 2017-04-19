@@ -8,6 +8,11 @@
 
 #define N 10
 
+struct array {
+  int size;
+  int data[0];
+};
+
 typedef void *(*thread_func)(void *);
 
 struct array *a[N];
@@ -20,10 +25,6 @@ extern const guint glib_major_version;
 extern const guint glib_minor_version;
 extern const guint glib_micro_version;
 
-struct array {
-  int size;
-  int data[0];
-};
 
 void test_singlethread();
 void test_multithread();
@@ -83,7 +84,7 @@ int main() {
 #endif
 
   qee = g_queue_new();
-  //test_singlethread();
+  test_singlethread();
   //test_multithread();
   printf("thread end\n");
   //g_queue_foreach(qee, print_queue, NULL);
@@ -118,19 +119,39 @@ void test_multithread() {
 
 }
 
+gint comp_func(gconstpointer a, gconstpointer b) {
+  struct array *x = (struct array *)a;
+  int y = *(int *)b;
+  printf("%d %d\n", x->size, y);
+  if (x->size == y)
+    return 0;
+  else
+    return 1;
+}
+
 void test_singlethread() {
-  g_queue_push_tail(qee, a[0]);
-  g_queue_push_tail(qee, a[1]);
-  g_queue_push_tail(qee, a[2]);
+  for (int i=0; i<N; i++) {
+    g_queue_push_tail(qee, a[i]);
+    printf("push: ");
+    print_array(a[i]);
+  }
+  //g_queue_push_tail(qee, a[1]);
+  //g_queue_push_tail(qee, a[2]);
   struct array *b = g_queue_peek_tail(qee);
   print_array(b);
-  g_queue_foreach(qee, print_queue, NULL);
+  //g_queue_foreach(qee, print_queue, NULL);
 
-  b = g_queue_pop_head(qee);
-  printf("pop: ");
-  print_array(b);
-  b = g_queue_pop_head(qee);
-  printf("pop: ");
-  print_array(b);
+  printf("find begin\n");
+  int found = 5;
+  GList *x = g_queue_find_custom(qee, &found, comp_func);
+  struct array *y = (struct array *)(x->data);
+  print_array(y);
+  printf("find end\n");
+
+  for (int i=0; i<5; i++) {
+    b = g_queue_pop_head(qee);
+    printf("pop: ");
+    print_array(b);
+  }
   g_queue_foreach(qee, print_queue, NULL);
 }

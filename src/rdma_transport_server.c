@@ -294,11 +294,22 @@ static void handle_send_event(struct ibv_wc *wc) {
   free(work_chunk);
 }
 
+static gint compare_func(gconstpointer a, gconstpointer b) {
+  varray_t *x = (varray_t *)a;
+  uint32_t y = *(uint32_t *)b;
+  //LOG(DEBUG, "%u %u", x->data_id, y);
+  if (x->data_id == y)
+    return 0;
+  else
+    return 1;
+}
+
 // producer thread and the chunk of data is order
 static void handle_recv_event(struct ibv_wc *wc) {
   struct rdma_work_chunk *work_chunk = (struct rdma_work_chunk *)wc->wr_id;
   struct rdma_transport *server = work_chunk->transport;
   struct rdma_chunk *chunk = work_chunk->chunk;
+  uint32_t data_id = chunk->header.data_id;
 
   if (chunk->header.chunk_len + RDMA_HEADER_SIZE != wc->byte_len) {
     LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) send chunk %u byte, but recv %u byte",
@@ -309,29 +320,27 @@ static void handle_recv_event(struct ibv_wc *wc) {
 
   // 目前设计只会有一个线程对chache操作
   // cache根据data_id缓冲，向线程池提交的参数是value可变长数组
-  int64_t data_id = (int64_t)chunk->header.data_id;
-  varray_t *now = g_hash_table_lookup(server->cache, &data_id);
-  if (now == NULL) {
+  pthread_mutex_lock(&server->queue_lock);
+
+  GList *found = g_queue_find_custom(server->work_queue, &data_id, compare_func);
+  if (found == NULL) {
     // free by worker, donot free by this function and hash table
-    now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
+    varray_t *now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
     GPR_ASSERT(now);
-
-    //test
-    LOG(INFO, "malloc a cache %p", now);
-
     now->transport = server;
     now->data_id = chunk->header.data_id;
     now->size = chunk->header.chunk_num;
     now->data[now->len++] = chunk;
-    // key free by hash table
-    int64_t *key = (int64_t *)malloc(sizeof(int64_t));
-    *key = data_id;
-    g_hash_table_insert(server->cache, key, now);
+
+    LOG(DEBUG, "recv id %u %s", data_id, server->remote_ip);
+
+    g_queue_push_tail(server->work_queue, now);
 
     for (int i=0; i<now->size; i++) {
       rdma_transport_recv(server);
     }
   } else {
+    varray_t *now = found->data;
     if (now->len >= now->size) {
       LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) when push chunk, len >= size (%u, %u)",
           server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num, now->len, now->size);
@@ -344,62 +353,70 @@ static void handle_recv_event(struct ibv_wc *wc) {
     }
     now->data[now->len++] = chunk;
   }
-
-  GPR_ASSERT(now);
-  if (now->len == now->size) {
-    LOG(DEBUG, "push a data to thread pool");
-    LOG(INFO, "%s push a cache data %u from %s", server->local_ip, now->data_id, server->remote_ip);
-    g_thread_pool_push(g_rdma_context->thread_pool, now, NULL);
-    g_hash_table_remove(server->cache, &data_id); // only free key
+  varray_t *head = g_queue_peek_head(server->work_queue);
+  if (server->running == 0 && head && head->len == head->size) {
+    server->running = 1;
+    LOG(INFO, "### -> %u:%s", head->data_id, server->remote_ip);
+    g_thread_pool_push(g_rdma_context->thread_pool, server, NULL);
   }
+  pthread_mutex_unlock(&server->queue_lock);
+
   free(work_chunk);
 }
 
 // 1. copy rdma to jvm
 // 2. call channelRead0 of spark
 static void work_thread(gpointer data, gpointer user_data) {
-  varray_t *varray = data;
-  GPR_ASSERT(varray);
-  if (varray->len != varray->size || varray->len == 0) {
-    LOG(ERROR, "varray len != size (%u, %u)", varray->len, varray->size);
-    abort();
+  struct rdma_transport *server = (struct rdma_transport *) data;
+  GPR_ASSERT(server);
+  GPR_ASSERT(server->running == 1);
+  while (1) {
+    pthread_mutex_lock(&server->queue_lock);
+    varray_t *head = g_queue_peek_head(server->work_queue);
+    if (head == NULL || head->len != head->size) {
+      server->running = 0;
+      pthread_mutex_unlock(&server->queue_lock);
+      break;
+    }
+    g_queue_pop_head(server->work_queue);
+    pthread_mutex_unlock(&server->queue_lock);
+
+    if (head->len != head->size || head->len == 0) {
+      LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
+      abort();
+    }
+
+    uint32_t data_len = 0;
+    uint32_t len = head->data[0]->header.data_len;
+    uint32_t data_id = head->data_id;
+    for (uint32_t i=0; i<head->size; i++) {
+      GPR_ASSERT(data_id == head->data[i]->header.data_id);
+      data_len += head->data[i]->header.chunk_len;
+    }
+    GPR_ASSERT(len == data_len);
+
+    //test
+    char output[310]; uint32_t begin;
+    uint8_t *print = head->data[0]->body;
+    LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
+    for (begin=0; begin<100 && begin<head->data[0]->header.chunk_len; begin++) {
+      sprintf(output+(begin*3), "%02x ", print[begin]);
+    }
+    output[begin*3] = '\0';
+    LOG(DEBUG, "%s", output);
+
+    jbyteArray jba = jni_alloc_byte_array(data_len);
+    int pos = 0;
+    for (uint32_t i=0; i<head->size; i++) {
+      set_byte_array_region(jba, pos, head->data[i]->header.chunk_len, head->data[i]->body);
+      pos += head->data[i]->header.chunk_len;
+    }
+    jni_channel_callback(server->remote_ip, jba, data_len);
+
+    for (uint32_t i=0; i<head->size; i++) {
+      release_rdma_chunk_to_pool(g_rdma_context->rbp, head->data[i]);
+    }
+    free(head);
+    LOG(INFO, "work thread success");
   }
-
-  uint32_t data_len = 0;
-  uint32_t len = varray->data[0]->header.data_len;
-  uint32_t data_id = varray->data_id;
-  for (uint32_t i=0; i<varray->size; i++) {
-    GPR_ASSERT(data_id == varray->data[i]->header.data_id);
-    data_len += varray->data[i]->header.chunk_len;
-  }
-  GPR_ASSERT(len == data_len);
-
-  struct rdma_transport *server = varray->transport;
-
-  //test
-  char output[310]; uint32_t begin;
-  uint8_t *print = varray->data[0]->body;
-  LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
-  for (begin=0; begin<100 && begin<varray->data[0]->header.chunk_len; begin++) {
-    sprintf(output+(begin*3), "%02x ", print[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
-
-  LOG(INFO, "%s get %u byte message, id %u from %s", server->local_ip,
-      data_len, varray->data_id, server->remote_ip);
-
-  jbyteArray jba = jni_alloc_byte_array(data_len);
-  int pos = 0;
-  for (uint32_t i=0; i<varray->size; i++) {
-    set_byte_array_region(jba, pos, varray->data[i]->header.chunk_len, varray->data[i]->body);
-    pos += varray->data[i]->header.chunk_len;
-  }
-  jni_channel_callback(server->remote_ip, jba, data_len);
-
-  for (uint32_t i=0; i<varray->size; i++) {
-    release_rdma_chunk_to_pool(g_rdma_context->rbp, varray->data[i]);
-  }
-  free(varray);
-  LOG(INFO, "work thread success");
 }
