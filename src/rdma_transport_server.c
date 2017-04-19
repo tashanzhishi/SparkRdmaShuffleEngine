@@ -376,7 +376,7 @@ static void work_thread(gpointer data, gpointer user_data) {
     if (head == NULL || head->len != head->size) {
       server->running = 0;
       pthread_mutex_unlock(&server->queue_lock);
-      break;
+      return;
     }
     g_queue_pop_head(server->work_queue);
     pthread_mutex_unlock(&server->queue_lock);
@@ -405,13 +405,16 @@ static void work_thread(gpointer data, gpointer user_data) {
     output[begin*3] = '\0';
     LOG(DEBUG, "%s", output);
 
-    jbyteArray jba = jni_alloc_byte_array(data_len);
+    usleep(10000);
+    /*jbyteArray jba = jni_alloc_byte_array(data_len);
+    LOG(DEBUG, "jni alloc byte array success");
     int pos = 0;
     for (uint32_t i=0; i<head->size; i++) {
       set_byte_array_region(jba, pos, head->data[i]->header.chunk_len, head->data[i]->body);
       pos += head->data[i]->header.chunk_len;
     }
-    jni_channel_callback(server->remote_ip, jba, data_len);
+    LOG(DEBUG, "set byte array region success");
+    jni_channel_callback(server->remote_ip, jba, data_len);*/
 
     for (uint32_t i=0; i<head->size; i++) {
       release_rdma_chunk_to_pool(g_rdma_context->rbp, head->data[i]);

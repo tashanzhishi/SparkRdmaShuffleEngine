@@ -24,11 +24,11 @@
   do {                                                                               \
     if (level & LOG_FLAGS) {                                                         \
       if (level == ERROR) {                                                          \
-        fprintf(stderr, "[%02lu] [ERROR] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
+        fprintf(stderr, "[%04lu] [ERROR] %s@%s#%d: " fmt "\n", pthread_self()%10000, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } else if (level == DEBUG) {                                                   \
-        fprintf(stderr, "[%02lu] [DEBUG] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
+        fprintf(stderr, "[%04lu] [DEBUG] %s@%s#%d: " fmt "\n", pthread_self()%10000, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } else if (level == INFO) {                                                    \
-        fprintf(stderr, "[%02lu] [ INFO] %s@%s#%d: " fmt "\n", pthread_self()%100, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
+        fprintf(stderr, "[%04lu] [ INFO] %s@%s#%d: " fmt "\n", pthread_self()%10000, __FILE__, __FUNCTION__, __LINE__, ##__VA_ARGS__);fflush(stderr);   \
       } \
     }                                                                                \
   } while(0)

@@ -82,12 +82,15 @@ void jni_channel_callback(char *remote_host, jbyteArray msg, int len) {
     JNIEnv *env;
     jstring jremoteHost = NULL;
 
+  LOG(DEBUG, "begin attach current thread");
     (*g_jvm)->AttachCurrentThread(g_jvm, &env, NULL);
+  LOG(DEBUG, " attach current thread success");
     jremoteHost = (*env)->NewStringUTF(env, remote_host);
 
+  LOG(DEBUG, "new string utf success");
     (*env)->CallVoidMethod(env, rdmaChannelHandler, channelRead0, jremoteHost, msg, len);
 
-    // LOG(DEBUG, "call channelRead0 success.\n", jremoteHost);
+   LOG(DEBUG, "call channelRead0 success %s\n", remote_host);
 
     (*g_jvm)->DetachCurrentThread(g_jvm);
 }
