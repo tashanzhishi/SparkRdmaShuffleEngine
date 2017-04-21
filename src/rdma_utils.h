@@ -10,7 +10,7 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 2048
-#define MAX_PRE_RECV_QP 1024
+#define MAX_PRE_RECV_QP (1024)
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 10
@@ -40,6 +40,7 @@ struct rdma_context {
   struct rdma_buffer_pool *rbp;
 
   GHashTable *hash_table;
+  GHashTable *host2ipstr;
   pthread_mutex_t hash_lock;
 
   GThreadPool *thread_pool;
@@ -74,6 +75,12 @@ struct rdma_transport {
 
   GHashTable *cache;
   void *recvk_array;
+};
+
+
+struct ip_hash_value {
+  struct rdma_transport *transport;
+  pthread_mutex_t connect_lock;
 };
 
 struct rdma_work_chunk {

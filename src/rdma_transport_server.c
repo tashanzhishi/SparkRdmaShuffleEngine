@@ -25,7 +25,7 @@
 extern struct rdma_context *g_rdma_context;
 
 
-struct accept_arg {
+struct accept_thread_arg {
   int sfd;
   char ip_str[IP_CHAR_SIZE];
   uint16_t port;
@@ -131,7 +131,7 @@ static int init_server_socket(const char *host, uint16_t port) {
   }
   LOG(DEBUG, "listen success");
 
-  struct accept_arg *arg = (struct accept_arg *)malloc(sizeof(struct accept_arg));
+  struct accept_thread_arg *arg = (struct accept_thread_arg *)malloc(sizeof(struct accept_thread_arg));
   arg->sfd = sfd;
   arg->port = port;
   strcpy(arg->ip_str, ip_str);
@@ -150,7 +150,7 @@ static int init_server_socket(const char *host, uint16_t port) {
 static void *accept_thread(void *arg) {
   LOG(DEBUG, "accept thread begin");
 
-  struct accept_arg * info = (struct accept_arg *)arg;
+  struct accept_thread_arg * info = (struct accept_thread_arg *)arg;
   int sfd = info->sfd;
   char *local_ip = info->ip_str;
 
@@ -163,36 +163,45 @@ static void *accept_thread(void *arg) {
       break;
     }
 
-    pthread_mutex_lock(&g_rdma_context->hash_lock);
-
     char remote_ip[IP_CHAR_SIZE] = {'\0'};
     memcpy(&client_addr, &addr, sizeof(addr));
     strcpy(remote_ip, inet_ntoa(client_addr.sin_addr));
-    LOG(DEBUG, "%s accept %s, fd=%d", local_ip, remote_ip, fd);
+    LOG(DEBUG, "accept %s, fd=%d", remote_ip, fd);
 
-    struct rdma_transport *server = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip);
-    if (server != NULL) {
+    pthread_mutex_lock(&g_rdma_context->hash_lock);
+    struct ip_hash_value *value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip);
+    if (value == NULL) {
+      char *key = (char *)calloc(1, IP_CHAR_SIZE);
+      strcpy(key, remote_ip);
+      value = (struct ip_hash_value *)calloc(1, sizeof(struct ip_hash_value));
+      pthread_mutex_init(&value->connect_lock, NULL);
+      g_hash_table_insert(g_rdma_context->hash_table, key, value);
+
+      pthread_mutex_lock(&value->connect_lock);
       pthread_mutex_unlock(&g_rdma_context->hash_lock);
-      continue;
+
+      struct rdma_transport *server = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
+      strcpy(server->local_ip, local_ip);
+      strcpy(server->remote_ip, remote_ip);
+
+      rdma_create_connect(server);
+      if (exchange_info(fd, server, false) < 0) {
+        LOG(ERROR, "server exchange information failed");
+        abort();
+      }
+      rdma_complete_connect(server);
+      value->transport = server;
+
+      pthread_mutex_unlock(&value->connect_lock);
+    } else if (value->transport == NULL) {
+      pthread_mutex_unlock(&g_rdma_context->hash_lock);
+      pthread_mutex_lock(&value->connect_lock);
+      GPR_ASSERT(value->transport);
+      pthread_mutex_unlock(&value->connect_lock);
+    } else {
+      pthread_mutex_unlock(&g_rdma_context->hash_lock);
     }
-
-    server = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
-    GPR_ASSERT(server);
-    strcpy(server->local_ip, local_ip);
-    strcpy(server->remote_ip, remote_ip);
-
-    rdma_create_connect(server);
-
-    if (exchange_info(fd, server, false) < 0) {
-      LOG(ERROR, "server exchange information failed");
-      abort();
-    }
-
-    char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE); // should not free yourself
-    strcpy(remote_ip_str, remote_ip);
-    g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, server);
-
-    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+    close(fd);
   }
 
   free(arg);

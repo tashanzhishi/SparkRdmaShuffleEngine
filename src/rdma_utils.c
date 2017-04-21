@@ -18,6 +18,8 @@
 
 
 static void free_hash_data(gpointer kv);
+static void free_context_hash_value(gpointer data);
+
 static union ibv_gid get_gid(struct ibv_context *context);
 static uint16_t get_local_lid(struct ibv_context *context);
 static int modify_qp_to_init(struct rdma_transport *transport);
@@ -66,7 +68,8 @@ int rdma_context_init() {
   }
 
   pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
-  g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
+  g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_context_hash_value);
+  g_rdma_context->host2ipstr = g_hash_table_new_full(g_str_hash, g_str_equal, free_hash_data, free_hash_data);
 
   LOG(DEBUG, "rdma_context_init end");
   return 0;
@@ -99,6 +102,7 @@ void rdma_context_destroy(struct rdma_context *context)
   // element: rc_qp should be free firstly
   g_hash_table_destroy(context->hash_table);
   context->hash_table = NULL;
+  g_hash_table_destroy(context->host2ipstr);
   pthread_mutex_destroy(&context->hash_lock);
 
   free(context);
@@ -146,7 +150,7 @@ int exchange_info(int sfd, struct rdma_transport *transport, bool is_client)
     transport->remote_qp_attr.qpn = ntohl(tmp.qpn);
     transport->remote_qp_attr.psn = ntohl(tmp.psn);
     //LOG(DEBUG, "%s lid = %u, qpn = %u", transport->remote_ip, transport->remote_qp_attr.lid, transport->remote_qp_attr.qpn);
-    rdma_complete_connect(transport);
+    //rdma_complete_connect(transport);
 
     tmp.lid = htons(transport->local_qp_attr.lid);
     tmp.qpn = htonl(transport->local_qp_attr.qpn);
@@ -205,12 +209,12 @@ int rdma_create_connect(struct rdma_transport *transport) {
     LOG(ERROR, "rdma_create_connect: failed to modify queue pair to initiate state");
     abort();
   }
-  for (int i=0; i<MAX_PRE_RECV_QP; i++) {
+  /*for (int i=0; i<MAX_PRE_RECV_QP; i++) {
     if (rdma_transport_recv(transport) < 0) {
       LOG(ERROR, "complete connect failed");
       abort();
     }
-  }
+  }*/
   LOG(DEBUG, "rdma_create_connect end");
   return 0;
 }
@@ -218,12 +222,12 @@ int rdma_create_connect(struct rdma_transport *transport) {
 void rdma_complete_connect(struct rdma_transport *transport) {
   GPR_ASSERT(modify_qp_to_rtr(transport) == 0);
   GPR_ASSERT(modify_qp_to_rts(transport) == 0);
-  /*for (int i=0; i<MAX_PRE_RECV_QP; i++) {
+  for (int i=0; i<MAX_PRE_RECV_QP; i++) {
     if (rdma_transport_recv(transport) < 0) {
       LOG(ERROR, "complete connect failed");
       abort();
     }
-  }*/
+  }
   LOG(DEBUG, "%s -> %s complete connect", transport->local_ip, transport->remote_ip);
 }
 
@@ -232,9 +236,9 @@ void rdma_shutdown_connect(struct rdma_transport *transport) {
     pthread_kill(transport->poll_id, SIGQUIT);
   }
   if (transport->work_queue != NULL) {
+    pthread_kill(transport->work_id, SIGQUIT);
     g_queue_free(transport->work_queue);
     pthread_mutex_destroy(&transport->queue_lock);
-    pthread_kill(transport->work_id, SIGQUIT);
   }
   pthread_mutex_destroy(&transport->cv_lock);
   pthread_cond_destroy(&transport->cv);
@@ -425,6 +429,13 @@ static void free_hash_data(gpointer kv) {
   g_free(kv);
 }
 
+static void free_context_hash_value(gpointer data) {
+  struct ip_hash_value * value = data;
+  pthread_mutex_destroy(&value->connect_lock);
+  free(value->transport);
+  free(value);
+}
+
 static union ibv_gid get_gid(struct ibv_context *context) {
   union ibv_gid ret_gid;
   if (ibv_query_gid(context, IB_PORT_NUM, 0, &ret_gid) < 0) {
@@ -555,7 +566,7 @@ static void handle_recv_event(struct ibv_wc *wc) {
     now->size = chunk->header.chunk_num;
     now->data[now->len++] = chunk;
 
-    LOG(DEBUG, "recv id %u %s", data_id, server->remote_ip);
+    LOG(DEBUG, "recv id %u:%u:%s", data_id, chunk->header.data_len, server->remote_ip);
 
     g_queue_push_tail(server->work_queue, now);
 
@@ -576,12 +587,12 @@ static void handle_recv_event(struct ibv_wc *wc) {
     }
     now->data[now->len++] = chunk;
   }
-  /*varray_t *head = g_queue_peek_head(server->work_queue);
+  varray_t *head = g_queue_peek_head(server->work_queue);
   if (server->running == 0 && head && head->len == head->size) {
     server->running = 1;
-    LOG(INFO, "### -> %u:%s", head->data_id, server->remote_ip);
+    LOG(INFO, "### -> %u:%u:%s", head->data_id,head->data[0]->header.data_len, server->remote_ip);
     pthread_cond_signal(&server->cv);
-  }*/
+  }
   pthread_mutex_unlock(&server->queue_lock);
 
   free(work_chunk);
@@ -602,16 +613,16 @@ static void *work_thread(void *arg) {
     pthread_mutex_lock(&server->queue_lock);
     varray_t *head = g_queue_peek_head(work_queue);
     if (head == NULL || head->len != head->size) {
-      //server->running = 0;
+      server->running = 0;
       pthread_mutex_unlock(&server->queue_lock);
-      //pthread_cond_wait(&server->cv, &server->cv_lock);
+      pthread_cond_wait(&server->cv, &server->cv_lock);
       continue;
     }
-    //GPR_ASSERT(server->running == 1);
+    GPR_ASSERT(server->running == 1);
     g_queue_pop_head(work_queue);
     pthread_mutex_unlock(&server->queue_lock);
 
-    if (head->len != head->size || head->len == 0) {
+    if (head->len != head->size/* || head->len == 0*/) {
       LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
       abort();
     }

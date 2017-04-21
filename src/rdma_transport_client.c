@@ -25,15 +25,12 @@ static void copy_msg_to_rdma(varray_t *chunk_array, uint8_t *msg, uint32_t len);
 static void copy_header_and_body_to_rdma(varray_t *chunk_array, uint8_t *header, uint32_t head_len,
                                          uint8_t *body, uint32_t body_len);
 static void rdma_send_msg(varray_t *chunk_array, uint32_t len);
-static struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port);
+static struct rdma_transport *get_transport_from_ip(const char *host, uint16_t port);
 
 
 int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   LOG(DEBUG, "send message host:%s port:%u len:%u", host, port, len);
 
-  //char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
-  //char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
-  //set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(host, port);
   GPR_ASSERT(client != NULL);
 
@@ -95,9 +92,6 @@ int send_msg_with_header(const char *host, uint16_t port,
                          uint8_t *header, uint32_t head_len, uint8_t *body, uint32_t body_len) {
   LOG(DEBUG, "send message with header host:%s port:%u head_len:%u body_len:%u", host, port, head_len, body_len);
 
-  //char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
-  //char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
-  //set_ip_from_host(host, remote_ip_str);
   struct rdma_transport *client = get_transport_from_ip(host, port);
   GPR_ASSERT(client != NULL);
   pthread_mutex_lock(&client->id_lock);
@@ -250,24 +244,51 @@ static void copy_header_and_body_to_rdma(varray_t *chunk_array, uint8_t *header,
   }
 }
 
-static struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port) {
+static struct rdma_transport *get_transport_from_ip(const char *host, uint16_t port) {
   pthread_mutex_lock(&g_rdma_context->hash_lock);
 
-  char remote_ip_str[IP_CHAR_SIZE] = {'\0'};
-  set_ip_from_host(ip_str, remote_ip_str);
+  char *remote_ip_str = g_hash_table_lookup(g_rdma_context->host2ipstr, host);
+  if (remote_ip_str == NULL) {
+    char *key = (char *)calloc(1, IP_CHAR_SIZE);
+    strcpy(key, host);
+    char *value = (char *)calloc(1, IP_CHAR_SIZE);
+    set_ip_from_host(host, value);
+    g_hash_table_insert(g_rdma_context->host2ipstr, key, value);
+    remote_ip_str = g_hash_table_lookup(g_rdma_context->host2ipstr, host);
+  }
+  GPR_ASSERT(remote_ip_str);
 
-  struct rdma_transport *client =
+  struct ip_hash_value *value =
       g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
 
-  if (client == NULL) {
+  if (value == NULL) {
+    char *key = (char *)calloc(1, IP_CHAR_SIZE);
+    strcpy(key, remote_ip_str);
+    value = (struct ip_hash_value *)calloc(1, sizeof(struct ip_hash_value));
+    pthread_mutex_init(&value->connect_lock, NULL);
+    g_hash_table_insert(g_rdma_context->hash_table, key, value);
+
+    pthread_mutex_lock(&value->connect_lock);
+    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+
     if (connect_server(remote_ip_str, port) < 0) {
       LOG(ERROR, "connect server %s:%u failed", remote_ip_str, port);
       abort();
     }
-    client = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
+    value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
+    pthread_mutex_unlock(&value->connect_lock);
+  } else if (value->transport == NULL) {
+    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+    pthread_mutex_lock(&value->connect_lock);
+    value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
+    GPR_ASSERT(value->transport);
+    pthread_mutex_unlock(&value->connect_lock);
+  } else {
+    pthread_mutex_unlock(&g_rdma_context->hash_lock);
   }
-  pthread_mutex_unlock(&g_rdma_context->hash_lock);
-  return client;
+
+  GPR_ASSERT(value->transport);
+  return value->transport;
 }
 
 static int connect_server(const char *ip_str, uint16_t port) {
@@ -277,8 +298,8 @@ static int connect_server(const char *ip_str, uint16_t port) {
   }
 
   // if link is existing, return
-  struct rdma_transport *client = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
-  if (client) {
+  struct ip_hash_value *value = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+  if (value->transport) {
     LOG(ERROR, "the link to %s is existing or null", ip_str);
     return -1;
   }
@@ -289,7 +310,7 @@ static int connect_server(const char *ip_str, uint16_t port) {
   srv_addr.sin_port = htons(port);
   srv_addr.sin_addr.s_addr = inet_addr(ip_str);
 
-  client = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
+  struct rdma_transport *client = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
   client->data_id = 0;
   pthread_mutex_init(&client->id_lock, NULL);
   strcpy(client->remote_ip, ip_str);
@@ -319,9 +340,7 @@ static int connect_server(const char *ip_str, uint16_t port) {
   rdma_complete_connect(client);
   close(client_fd);
 
-  char *remote_ip_str = (char *)calloc(1, IP_CHAR_SIZE);
-  strcpy(remote_ip_str, ip_str);
-  g_hash_table_insert(g_rdma_context->hash_table, remote_ip_str, client);
+  value->transport = client;
 
   return 0;
 error:

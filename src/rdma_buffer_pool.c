@@ -30,8 +30,10 @@ void destroy_rdma_buffer_pool(struct rdma_buffer_pool *rbp) {
 
 struct rdma_chunk *get_rdma_chunk_from_pool(struct rdma_buffer_pool *rbp) {
 	struct rdma_chunk *chunk;
-
-	if (rbp->free_list == NULL) {
+  pthread_mutex_lock(&rbp->lock);
+  uint32_t free_size = rbp->free_size;
+  pthread_mutex_unlock(&rbp->lock);
+	if (free_size == 0) {
     if (append_rdma_buffer_pool(rbp, RDMA_BUFFER_SIZE) < 0) {
       LOG(ERROR, "when get chunk from pool, the free list is null, and append failed.");
       return NULL;
