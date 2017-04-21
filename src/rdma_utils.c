@@ -12,6 +12,9 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include "jni_common.h"
+#include "thread.h"
+
 
 
 static void free_hash_data(gpointer kv);
@@ -20,6 +23,13 @@ static uint16_t get_local_lid(struct ibv_context *context);
 static int modify_qp_to_init(struct rdma_transport *transport);
 static int modify_qp_to_rts(struct rdma_transport *transport);
 static int modify_qp_to_rtr(struct rdma_transport *transport);
+
+static void *poll_thread(void *arg);
+static void handle_send_event(struct ibv_wc *wc);
+static void handle_recv_event(struct ibv_wc *wc);
+static void *work_thread(void *arg);
+
+static void quit_thread(int signo);
 
 struct rdma_context *g_rdma_context;
 
@@ -45,20 +55,8 @@ int rdma_context_init() {
   g_rdma_context->pd = ibv_alloc_pd(g_rdma_context->context);
   GPR_ASSERT(g_rdma_context->pd);
 
-  for (int i=0; i<MAX_POLL_THREAD; i++) {
-    g_rdma_context->comp_channel[i] = ibv_create_comp_channel(g_rdma_context->context);
-    GPR_ASSERT(g_rdma_context->comp_channel[i]);
-    g_rdma_context->cq[i] = ibv_create_cq(g_rdma_context->context, MAX_CQE + 1,
-                                          NULL, g_rdma_context->comp_channel[i], 0);
-    GPR_ASSERT(g_rdma_context->cq[i]);
-    if (ibv_req_notify_cq(g_rdma_context->cq[i], 0) < 0) {
-      LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
-      abort();
-    }
-  }
-
-  pthread_mutex_init(&g_rdma_context->cq_lock, NULL);
-  g_rdma_context->cq_num = 0;
+  //pthread_mutex_init(&g_rdma_context->cq_lock, NULL);
+  //g_rdma_context->cq_num = 0;
 
   g_rdma_context->rbp = (struct rdma_buffer_pool *) malloc(sizeof(struct rdma_buffer_pool));
   GPR_ASSERT(g_rdma_context->rbp);
@@ -78,15 +76,15 @@ void rdma_context_destroy(struct rdma_context *context)
 {
   destroy_rdma_buffer_pool(context->rbp);
 
-  for (int i=0; i<MAX_POLL_THREAD; i++) {
+  /*for (int i=0; i<MAX_POLL_THREAD; i++) {
     GPR_ASSERT(context->cq[i]);
     GPR_ASSERT(context->comp_channel[i]);
     ibv_destroy_cq(context->cq[i]);
     ibv_destroy_comp_channel(context->comp_channel[i]);
     context->cq[i] = NULL;
     context->comp_channel[i] = NULL;
-  }
-  pthread_mutex_destroy(&context->cq_lock);
+  }*/
+  //pthread_mutex_destroy(&context->cq_lock);
 
   GPR_ASSERT(context->pd);
   ibv_dealloc_pd(context->pd);
@@ -168,24 +166,30 @@ int rdma_create_connect(struct rdma_transport *transport) {
   LOG(DEBUG, "rdma_create_connect begin");
   GPR_ASSERT(transport);
 
-  // (data_id, varray) (int64_t*, varray_t *)
-  //transport->cache = g_hash_table_new_full(g_int64_hash, g_int64_equal, free_hash_data, NULL);
   transport->work_queue = g_queue_new();
   transport->running = 0;
   pthread_mutex_init(&transport->queue_lock, NULL);
+  pthread_cond_init(&transport->cv, NULL);
+  pthread_mutex_init(&transport->cv_lock, NULL);
 
-  pthread_mutex_lock(&g_rdma_context->cq_lock);
-  struct ibv_cq *cq = g_rdma_context->cq[(g_rdma_context->cq_num++)%MAX_POLL_THREAD];
-  pthread_mutex_unlock(&g_rdma_context->cq_lock);
-  transport->cq = cq;
+  transport->comp_channel = ibv_create_comp_channel(g_rdma_context->context);
+  GPR_ASSERT(transport->comp_channel);
+  transport->cq =  ibv_create_cq(g_rdma_context->context, MAX_CQE + 1, NULL, transport->comp_channel, 0);
+  GPR_ASSERT(transport->cq);
+  if (ibv_req_notify_cq(transport->cq, 0) < 0) {
+    LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
+    abort();
+  }
+  transport->poll_id = create_thread(poll_thread, transport);
+  transport->work_id = create_thread(work_thread, transport);
 
   LOG(INFO, "*** now use RC ***");
 
   struct ibv_qp_init_attr init_attr = {
       .qp_type = IBV_QPT_RC,
       .sq_sig_all = 1,
-      .send_cq = cq,
-      .recv_cq = cq,
+      .send_cq = transport->cq,
+      .recv_cq = transport->cq,
       .srq = NULL,
       .cap = {
           .max_send_wr = MAX_CQE,
@@ -224,10 +228,16 @@ void rdma_complete_connect(struct rdma_transport *transport) {
 }
 
 void rdma_shutdown_connect(struct rdma_transport *transport) {
+  if (transport->poll_id > 0) {
+    pthread_kill(transport->poll_id, SIGQUIT);
+  }
   if (transport->work_queue != NULL) {
     g_queue_free(transport->work_queue);
     pthread_mutex_destroy(&transport->queue_lock);
+    pthread_kill(transport->work_id, SIGQUIT);
   }
+  pthread_mutex_destroy(&transport->cv_lock);
+  pthread_cond_destroy(&transport->cv);
 
   GPR_ASSERT(transport->rc_qp);
   if (ibv_destroy_qp(transport->rc_qp) < 0) {
@@ -235,6 +245,12 @@ void rdma_shutdown_connect(struct rdma_transport *transport) {
     abort();
   }
   transport->rc_qp = NULL;
+
+  GPR_ASSERT(transport->cq);
+  GPR_ASSERT(transport->comp_channel);
+  ibv_destroy_cq(transport->cq);
+  ibv_destroy_comp_channel(transport->comp_channel);
+
 
   LOG(DEBUG, "shutdown connect");
 }
@@ -286,12 +302,77 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
   struct ibv_send_wr *bad_wr = NULL;
   if (ibv_post_send(transport->rc_qp, &send_wr, &bad_wr) < 0) {
     LOG(ERROR, "ibv_post_send error, %s", strerror(errno));
-    return -1;
+    abort();
   }
   //LOG(DEBUG, "post send %u byte", send_wc->len+RDMA_HEADER_SIZE);
 
   return 0;
 }
+
+
+static void *poll_thread(void *arg) {
+  struct rdma_transport *server = (struct rdma_transport *)arg;
+  GPR_ASSERT(server);
+  struct ibv_comp_channel *channel = server->comp_channel;
+  struct ibv_cq *cq = server->cq;
+  GPR_ASSERT(channel);
+  GPR_ASSERT(cq);
+
+  // register quit signal
+  signal(SIGQUIT, quit_thread);
+
+  int event_num = 0;
+  struct ibv_cq *ev_cq;
+  void *ev_ctx;
+  struct ibv_wc wc[MAX_EVENT_PER_POLL];
+
+  while (1) {
+    LOG(DEBUG, "begin blocking ibv_get_cq_event");
+    if (ibv_get_cq_event(channel, &ev_cq, &ev_ctx) < 0) {
+      LOG(ERROR, "ibv_get_cq_event error, %s", strerror(errno));
+      abort();
+    }
+
+    ibv_ack_cq_events(cq, 1);
+
+    if (ibv_req_notify_cq(ev_cq, 0) < 0) {
+      LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
+      abort();
+    }
+
+    do {
+      event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
+      LOG(DEBUG, "poll %d event", event_num);
+
+      if (event_num < 0) {
+        LOG(ERROR, "ibv_poll_cq poll error");
+        abort();
+      } else {
+        for (int i=0; i<event_num; i++) {
+          if (wc[i].status != IBV_WC_SUCCESS) {
+            LOG(ERROR, "ibv_wc.status error %d", wc[i].status);
+            abort();
+          } else {
+            if (wc[i].opcode == IBV_WC_SEND) {
+              //LOG(DEBUG, "handle a send event begin");
+              handle_send_event(&wc[i]);
+              //LOG(DEBUG, "handle a send event end");
+            } else if (wc[i].opcode == IBV_WC_RECV) {
+              //LOG(DEBUG, "handle a recv event begin");
+              handle_recv_event(&wc[i]);
+              //LOG(DEBUG, "handle a recv event end");
+            } else {
+              LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
+              abort();
+            }
+          }
+        }
+      }
+    } while (event_num);
+  }
+  return NULL;
+}
+
 
 // the return is ip, but the user must free it yourself.
 void set_ip_from_host(const char *host, char *ip_str) {
@@ -312,10 +393,13 @@ void set_local_ip(char *ip_str) {
   set_ip_from_host(host_name, ip_str);
 }
 
-struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
+/*struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
                                              create_transport_fun create_transport) {
+  //pthread_mutex_lock(&g_rdma_context->hash_lock);
   struct rdma_transport *client =
       g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
+  //pthread_mutex_unlock(&g_rdma_context->hash_lock);
+
   if (client == NULL) {
     pthread_mutex_lock(&g_rdma_context->hash_lock);
     client = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
@@ -326,12 +410,11 @@ struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
         return NULL;
       }
       client = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
-      client->cq_id++;
     }
     pthread_mutex_unlock(&g_rdma_context->hash_lock);
   }
   return client;
-}
+}*/
 
 /************************************************************************/
 /*                          local function                              */
@@ -379,9 +462,9 @@ static int modify_qp_to_rts(struct rdma_transport *transport) {
   struct ibv_qp_attr rts_attr;
   memset(&rts_attr, 0, sizeof(rts_attr));
   rts_attr.qp_state = IBV_QPS_RTS;
-  rts_attr.timeout  = 12;
-  rts_attr.retry_cnt = 6;
-  rts_attr.rnr_retry = 6;
+  rts_attr.timeout  = 3;
+  rts_attr.retry_cnt = 3;
+  rts_attr.rnr_retry = 3;
   rts_attr.max_rd_atomic = 0; // rc must add it
   rts_attr.sq_psn   = transport->local_qp_attr.psn;
 
@@ -398,7 +481,7 @@ static int modify_qp_to_rtr(struct rdma_transport *transport) {
   memset(&rtr_attr, 0, sizeof(rtr_attr));
   rtr_attr.qp_state = IBV_QPS_RTR;
   rtr_attr.path_mtu = IBV_MTU_4096;
-  rtr_attr.min_rnr_timer = 12;
+  rtr_attr.min_rnr_timer = 3;
   rtr_attr.max_dest_rd_atomic = 0; // rc must add it
   rtr_attr.dest_qp_num = transport->remote_qp_attr.qpn;
   rtr_attr.rq_psn = transport->remote_qp_attr.psn;
@@ -415,4 +498,157 @@ static int modify_qp_to_rtr(struct rdma_transport *transport) {
     return -1;
   }
   return 0;
+}
+
+
+
+
+
+
+
+static void quit_thread(int signo) {
+  LOG(DEBUG, "thread %lu will exit", pthread_self()%100);
+  pthread_exit(NULL);
+}
+
+static void handle_send_event(struct ibv_wc *wc) {
+  struct rdma_work_chunk *work_chunk = (struct rdma_work_chunk *)wc->wr_id;
+  struct rdma_chunk *chunk = work_chunk->chunk;
+  release_rdma_chunk_to_pool(g_rdma_context->rbp, chunk);
+  free(work_chunk);
+}
+
+static gint compare_func(gconstpointer a, gconstpointer b) {
+  varray_t *x = (varray_t *)a;
+  uint32_t y = *(uint32_t *)b;
+  if (x->data_id == y)
+    return 0;
+  else
+    return 1;
+}
+
+// producer thread and the chunk of data is order
+static void handle_recv_event(struct ibv_wc *wc) {
+  struct rdma_work_chunk *work_chunk = (struct rdma_work_chunk *)wc->wr_id;
+  struct rdma_transport *server = work_chunk->transport;
+  struct rdma_chunk *chunk = work_chunk->chunk;
+  uint32_t data_id = chunk->header.data_id;
+
+  if (chunk->header.chunk_len + RDMA_HEADER_SIZE != wc->byte_len) {
+    LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) send chunk %u byte, but recv %u byte",
+        server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num,
+        chunk->header.chunk_len + RDMA_HEADER_SIZE, wc->byte_len);
+    abort();
+  }
+
+  // 目前设计只会有一个线程对chache操作
+  // cache根据data_id缓冲，向线程池提交的参数是value可变长数组
+  pthread_mutex_lock(&server->queue_lock);
+
+  GList *found = g_queue_find_custom(server->work_queue, &data_id, compare_func);
+  if (found == NULL) {
+    // free by worker, donot free by this function and hash table
+    varray_t *now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
+    GPR_ASSERT(now);
+    now->transport = server;
+    now->data_id = chunk->header.data_id;
+    now->size = chunk->header.chunk_num;
+    now->data[now->len++] = chunk;
+
+    LOG(DEBUG, "recv id %u %s", data_id, server->remote_ip);
+
+    g_queue_push_tail(server->work_queue, now);
+
+    for (int i=0; i<now->size; i++) {
+      rdma_transport_recv(server);
+    }
+  } else {
+    varray_t *now = found->data;
+    if (now->len >= now->size) {
+      LOG(ERROR, "remote_ip:%s local_ip:%s, the data (id:%u, num:%u) when push chunk, len >= size (%u, %u)",
+          server->remote_ip, server->local_ip, chunk->header.data_id, chunk->header.chunk_num, now->len, now->size);
+      abort();
+    }
+    if (now->data_id != chunk->header.data_id) {
+      LOG(ERROR, "%s --> %s, data_id: %u != %u",
+          server->remote_ip, server->local_ip, now->data_id, chunk->header.data_id);
+      abort();
+    }
+    now->data[now->len++] = chunk;
+  }
+  /*varray_t *head = g_queue_peek_head(server->work_queue);
+  if (server->running == 0 && head && head->len == head->size) {
+    server->running = 1;
+    LOG(INFO, "### -> %u:%s", head->data_id, server->remote_ip);
+    pthread_cond_signal(&server->cv);
+  }*/
+  pthread_mutex_unlock(&server->queue_lock);
+
+  free(work_chunk);
+}
+
+
+// 1. copy rdma to jvm
+// 2. call channelRead0 of spark
+static void *work_thread(void *arg) {
+  struct rdma_transport *server = (struct rdma_transport *)arg;
+  GPR_ASSERT(server);
+  GQueue *work_queue = server->work_queue;
+
+  // register quit signal
+  signal(SIGQUIT, quit_thread);
+
+  while (1) {
+    pthread_mutex_lock(&server->queue_lock);
+    varray_t *head = g_queue_peek_head(work_queue);
+    if (head == NULL || head->len != head->size) {
+      //server->running = 0;
+      pthread_mutex_unlock(&server->queue_lock);
+      //pthread_cond_wait(&server->cv, &server->cv_lock);
+      continue;
+    }
+    //GPR_ASSERT(server->running == 1);
+    g_queue_pop_head(work_queue);
+    pthread_mutex_unlock(&server->queue_lock);
+
+    if (head->len != head->size || head->len == 0) {
+      LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
+      abort();
+    }
+
+    uint32_t data_len = 0;
+    uint32_t len = head->data[0]->header.data_len;
+    uint32_t data_id = head->data_id;
+    for (uint32_t i=0; i<head->size; i++) {
+      GPR_ASSERT(data_id == head->data[i]->header.data_id);
+      data_len += head->data[i]->header.chunk_len;
+    }
+    GPR_ASSERT(len == data_len);
+
+    //test
+    char output[310]; uint32_t begin;
+    uint8_t *print = head->data[0]->body;
+    LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
+    for (begin=0; begin<100 && begin<head->data[0]->header.chunk_len; begin++) {
+      sprintf(output+(begin*3), "%02x ", print[begin]);
+    }
+    output[begin*3] = '\0';
+    LOG(DEBUG, "%s", output);
+
+    jbyteArray jba = jni_alloc_byte_array(data_len);
+    LOG(DEBUG, "jni alloc byte array success");
+    int pos = 0;
+    for (uint32_t i=0; i<head->size; i++) {
+      set_byte_array_region(jba, pos, head->data[i]->header.chunk_len, head->data[i]->body);
+      pos += head->data[i]->header.chunk_len;
+    }
+    LOG(DEBUG, "set byte array region success");
+    jni_channel_callback(server->remote_ip, jba, data_len);
+
+    for (uint32_t i=0; i<head->size; i++) {
+      release_rdma_chunk_to_pool(g_rdma_context->rbp, head->data[i]);
+    }
+    free(head);
+    LOG(INFO, "work thread success");
+  }
 }

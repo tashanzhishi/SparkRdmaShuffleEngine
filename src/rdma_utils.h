@@ -7,13 +7,14 @@
 #include "rdma_buffer_pool.h"
 #include "rdma_log.h"
 
-#define MAX_POLL_THREAD 5
+#define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 2048
 #define MAX_PRE_RECV_QP 1024
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 10
+#define MAX_EVENT_PER_POLL 64
 
 struct qp_attr {
   //uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
@@ -27,11 +28,14 @@ struct rdma_context {
   struct ibv_context *context;
   struct ibv_pd *pd;
 
-  int cq_num;
-  pthread_mutex_t cq_lock;
-  struct ibv_cq *cq[MAX_POLL_THREAD];
-  struct ibv_comp_channel *comp_channel[MAX_POLL_THREAD];
-  pthread_t pid[MAX_POLL_THREAD];
+  //int cq_num;
+  //pthread_mutex_t cq_lock;
+  //struct ibv_cq *cq[MAX_POLL_THREAD];
+  //struct ibv_comp_channel *comp_channel[MAX_POLL_THREAD];
+  //pthread_t poll_ids[MAX_POLL_THREAD];
+  //pthread_t work_ids[MAX_POLL_THREAD];
+  //GQueue *work_queue[MAX_POLL_THREAD];
+  //pthread_mutex_t queue_lock[MAX_POLL_THREAD];
 
   struct rdma_buffer_pool *rbp;
 
@@ -44,22 +48,30 @@ struct rdma_context {
 };
 
 struct rdma_transport {
+  uint8_t creating;
   struct qp_attr local_qp_attr;
   struct qp_attr remote_qp_attr;
   int            cq_id;
-  struct ibv_qp  *rc_qp;
+  struct ibv_comp_channel *comp_channel;
   struct ibv_cq  *cq;
-
+  struct ibv_qp  *rc_qp;
 
   char local_ip[IP_CHAR_SIZE];
   char remote_ip[IP_CHAR_SIZE];
+
   // for client
   uint32_t data_id;
   pthread_mutex_t id_lock;
+
   // for server
+  pthread_t poll_id;
   GQueue *work_queue;
   pthread_mutex_t queue_lock;
+  pthread_t work_id;
+  pthread_cond_t cv;
+  pthread_mutex_t cv_lock;
   volatile int running;
+
   GHashTable *cache;
   void *recvk_array;
 };
@@ -99,8 +111,8 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
 void set_ip_from_host(const char *host, char *ip_str);
 void set_local_ip(char *ip_str);
 
-struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
-                                             create_transport_fun create_transport);
+//struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
+//                                             create_transport_fun create_transport);
 
 
 #endif /* RDMA_UTILS_H_ */
