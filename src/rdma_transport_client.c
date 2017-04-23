@@ -17,6 +17,7 @@
 
 
 #include "rdma_utils.h"
+#include "rdma_transport.h"
 
 extern struct rdma_context *g_rdma_context;
 
@@ -351,7 +352,7 @@ static int connect_server(const char *ip_str, uint16_t port) {
   }
 
   // this is a blocking function
-  if (exchange_info(client_fd, client, true) < 0) {
+  if (exchange_info(client_fd, &client->local_qp_attr, &client->remote_qp_attr, client->rc_qp, true) < 0) {
     LOG(ERROR, "client exchange information failed");
     goto error;
   }

@@ -18,6 +18,7 @@
 
 #include "rdma_utils.h"
 #include "thread.h"
+#include "rdma_transport.h"
 
 #include "jni_common.h"
 
@@ -191,7 +192,7 @@ static void *accept_thread(void *arg) {
       }
       pthread_mutex_unlock(&value->connect_lock);
 
-      if (exchange_info(fd, server, false) < 0) {
+      if (exchange_info(fd, &server->local_qp_attr, &server->remote_qp_attr, server->rc_qp, false) < 0) {
         LOG(ERROR, "server exchange information failed");
         abort();
       }

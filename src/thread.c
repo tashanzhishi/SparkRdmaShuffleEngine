@@ -15,3 +15,8 @@ pthread_t create_thread(thread_func func, void *arg) {
   }
   return thread;
 }
+
+void quit_thread(int signo) {
+  LOG(DEBUG, "thread %lu will exit", pthread_self()%100);
+  pthread_exit(NULL);
+}

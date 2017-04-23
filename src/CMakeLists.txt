@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 2.6)
 
-set(SOURCE_FILES thread.c
-        rdma_buffer_pool.c rdma_log.c rdma_utils.c
-        rdma_transport_client.c rdma_transport_server.c jni_common.c jni_common.h io_rdma_RdmaServer.c io_rdma_RdmaServer.h io_rdma_RdmaChannel.c io_rdma_RdmaChannel.h)
+set(SOURCE_FILES rdma_log.c rdma_log.h thread.c thread.h
+        rdma_buffer_pool.c rdma_buffer_pool.h rdma_utils.c rdma_utils.h
+        rdma_transport.c rdma_transport.h rdma_transport_client.c rdma_transport_client.h rdma_transport_server.c rdma_transport_server.h
+        jni_common.c jni_common.h io_rdma_RdmaServer.c io_rdma_RdmaServer.h io_rdma_RdmaChannel.c io_rdma_RdmaChannel.h)
 
 # 添加动态库 关键词SHARED
 add_library(spark_rdma_shuffle_engine SHARED ${SOURCE_FILES})

@@ -1,5 +1,5 @@
-#ifndef RDMABUFFERPOOL_H_
-#define RDMABUFFERPOOL_H_
+#ifndef SPARKRDMASHUFFLEENGINE_RDMA_BUFFER_POOL_H
+#define SPARKRDMASHUFFLEENGINE_RDMA_BUFFER_POOL_H
 
 #include "rdma_log.h"
 
@@ -60,4 +60,4 @@ struct rdma_chunk *get_rdma_chunk_list_from_pool(struct rdma_buffer_pool *rbp, u
 void release_rdma_chunk_to_pool(struct rdma_buffer_pool *rbp, struct rdma_chunk *chunk);
 
 
-#endif /* RDMABUFFERPOOL_H_ */
+#endif /* SPARKRDMASHUFFLEENGINE_RDMA_BUFFER_POOL_H */

@@ -1,8 +1,9 @@
-#ifndef RDMA_LOG_H_
-#define RDMA_LOG_H_
+#ifndef SPARKRDMASHUFFLEENGINE_RDMA_LOG_H
+#define SPARKRDMASHUFFLEENGINE_RDMA_LOG_H
 
 #include <stdio.h>
 #include <pthread.h>
+#include <stdlib.h>
 
 
 // bash shell color
@@ -42,4 +43,4 @@
     }                                         \
   } while(0)
 
-#endif /* RDMA_LOG_H_ */
+#endif /* SPARKRDMASHUFFLEENGINE_RDMA_LOG_H */
