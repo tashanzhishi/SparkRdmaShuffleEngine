@@ -1,8 +1,6 @@
 #ifndef SPARKRDMASHUFFLEENGINE_RDMA_TRANSPORT_SERVER_H
 #define SPARKRDMASHUFFLEENGINE_RDMA_TRANSPORT_SERVER_H
 
-#define MAX_EVENT_PER_POLL 64
-
 #include <stdint.h>
 
 /*struct rdma_transport_server {

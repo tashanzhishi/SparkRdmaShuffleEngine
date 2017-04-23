@@ -91,6 +91,7 @@ void rdma_shutdown_connect(struct rdma_transport *transport) {
   GPR_ASSERT(transport->comp_channel);
   ibv_destroy_cq(transport->cq);
   ibv_destroy_comp_channel(transport->comp_channel);
+  free(transport);
 
   LOG(DEBUG, "shutdown connect");
 }
@@ -187,8 +188,69 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
   return 0;
 }
 
+// 1. copy rdma to jvm
+// 2. call channelRead0 of spark
+void work_thread(gpointer data, gpointer user_data) {
+  struct rdma_transport *server = (struct rdma_transport *)data;
+  GPR_ASSERT(server);
+  GQueue *work_queue = server->work_queue;
 
+  // register quit signal
+  signal(SIGQUIT, quit_thread);
 
+  while (1) {
+    pthread_mutex_lock(&server->work_queue_lock);
+    varray_t *head = g_queue_peek_head(work_queue);
+    if (head == NULL || head->len != head->size) {
+      server->is_work_running = 0;
+      pthread_mutex_unlock(&server->work_queue_lock);
+      //pthread_cond_wait(&server->work_cv, &server->work_cv_lock);
+      //continue;
+      return;
+    }
+    GPR_ASSERT(server->is_work_running == 1);
+    g_queue_pop_head(work_queue);
+    pthread_mutex_unlock(&server->work_queue_lock);
+
+    if (head->len != head->size/* || head->len == 0*/) {
+      LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
+      abort();
+    }
+
+    uint32_t data_len = 0;
+    uint32_t len = head->data[0]->header.data_len;
+    uint32_t data_id = head->data_id;
+    for (uint32_t i=0; i<head->size; i++) {
+      GPR_ASSERT(data_id == head->data[i]->header.data_id);
+      data_len += head->data[i]->header.chunk_len;
+    }
+    GPR_ASSERT(len == data_len);
+
+    //test
+    char output[310]; uint32_t begin;
+    uint8_t *print = head->data[0]->body;
+    LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
+    for (begin=0; begin<100 && begin<head->data[0]->header.chunk_len; begin++) {
+      sprintf(output+(begin*3), "%02x ", print[begin]);
+    }
+    output[begin*3] = '\0';
+    LOG(DEBUG, "%s", output);
+
+    jbyteArray jba = jni_alloc_byte_array(data_len);
+    int pos = 0;
+    for (uint32_t i=0; i<head->size; i++) {
+      set_byte_array_region(jba, pos, head->data[i]->header.chunk_len, head->data[i]->body);
+      pos += head->data[i]->header.chunk_len;
+    }
+    jni_channel_callback(server->remote_ip, jba, data_len);
+
+    for (uint32_t i=0; i<head->size; i++) {
+      release_rdma_chunk_to_pool(g_rdma_context->rbp, head->data[i]);
+    }
+    free(head);
+    LOG(INFO, "work thread success");
+  }
+}
 
 
 
@@ -346,70 +408,4 @@ static void handle_recv_event(struct ibv_wc *wc) {
   pthread_mutex_unlock(&server->work_queue_lock);
 
   free(work_chunk);
-}
-
-// 1. copy rdma to jvm
-// 2. call channelRead0 of spark
-void work_thread(gpointer data, gpointer user_data) {
-  struct rdma_transport *server = (struct rdma_transport *)data;
-  GPR_ASSERT(server);
-  GQueue *work_queue = server->work_queue;
-
-  // register quit signal
-  signal(SIGQUIT, quit_thread);
-
-  while (1) {
-    pthread_mutex_lock(&server->work_queue_lock);
-    varray_t *head = g_queue_peek_head(work_queue);
-    if (head == NULL || head->len != head->size) {
-      server->is_work_running = 0;
-      pthread_mutex_unlock(&server->work_queue_lock);
-      //pthread_cond_wait(&server->work_cv, &server->work_cv_lock);
-      //continue;
-      return;
-    }
-    GPR_ASSERT(server->is_work_running == 1);
-    g_queue_pop_head(work_queue);
-    pthread_mutex_unlock(&server->work_queue_lock);
-
-    if (head->len != head->size/* || head->len == 0*/) {
-      LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
-      abort();
-    }
-
-    uint32_t data_len = 0;
-    uint32_t len = head->data[0]->header.data_len;
-    uint32_t data_id = head->data_id;
-    for (uint32_t i=0; i<head->size; i++) {
-      GPR_ASSERT(data_id == head->data[i]->header.data_id);
-      data_len += head->data[i]->header.chunk_len;
-    }
-    GPR_ASSERT(len == data_len);
-
-    //test
-    char output[310]; uint32_t begin;
-    uint8_t *print = head->data[0]->body;
-    LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
-    for (begin=0; begin<100 && begin<head->data[0]->header.chunk_len; begin++) {
-      sprintf(output+(begin*3), "%02x ", print[begin]);
-    }
-    output[begin*3] = '\0';
-    LOG(DEBUG, "%s", output);
-
-    jbyteArray jba = jni_alloc_byte_array(data_len);
-    LOG(DEBUG, "jni alloc byte array success");
-    int pos = 0;
-    for (uint32_t i=0; i<head->size; i++) {
-      set_byte_array_region(jba, pos, head->data[i]->header.chunk_len, head->data[i]->body);
-      pos += head->data[i]->header.chunk_len;
-    }
-    LOG(DEBUG, "set byte array region success");
-    jni_channel_callback(server->remote_ip, jba, data_len);
-
-    for (uint32_t i=0; i<head->size; i++) {
-      release_rdma_chunk_to_pool(g_rdma_context->rbp, head->data[i]);
-    }
-    free(head);
-    LOG(INFO, "work thread success");
-  }
 }

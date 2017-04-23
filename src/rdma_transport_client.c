@@ -263,12 +263,12 @@ static struct rdma_transport *get_transport_from_ip(const char *host, uint16_t p
 
   struct ip_hash_value *value =
       g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
+  struct rdma_transport *client;
   if (value == NULL) {
     char *key = (char *)calloc(1, IP_CHAR_SIZE);
     strcpy(key, remote_ip_str);
     value = (struct ip_hash_value *)calloc(1, sizeof(struct ip_hash_value));
-    value->transport = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
-    struct rdma_transport *client = value->transport;
+    client = value->transport = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
     pthread_mutex_init(&value->connect_lock, NULL);
     // client
     client->data_id = 0;

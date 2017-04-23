@@ -48,17 +48,11 @@ struct rdma_transport {
   volatile int is_work_running;
 };
 
-struct ip_hash_value {
-  struct rdma_transport *transport;
-  pthread_mutex_t connect_lock;
-};
-
 struct rdma_work_chunk {
   struct rdma_transport *transport;
   struct rdma_chunk     *chunk;
   uint32_t              len;
 };
-
 
 typedef struct varray_t {
   struct rdma_transport *transport;
@@ -68,6 +62,11 @@ typedef struct varray_t {
   struct rdma_chunk* data[0];
 } varray_t;
 #define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(sizeof(void*)*(len))))
+
+struct ip_hash_value {
+  struct rdma_transport *transport;
+  pthread_mutex_t connect_lock;
+};
 
 
 

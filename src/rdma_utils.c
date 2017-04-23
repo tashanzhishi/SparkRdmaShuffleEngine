@@ -58,7 +58,7 @@ int rdma_context_init() {
   }
 
   pthread_mutex_init(&g_rdma_context->hash_lock, NULL);
-  g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_context_hash_value);
+  g_rdma_context->hash_table = g_hash_table_new_full(g_str_hash, g_int64_equal, free_hash_data, free_hash_data);
   g_rdma_context->host2ipstr = g_hash_table_new_full(g_str_hash, g_str_equal, free_hash_data, free_hash_data);
 
   LOG(DEBUG, "rdma_context_init end");
@@ -227,13 +227,6 @@ void set_local_ip(char *ip_str) {
 
 static void free_hash_data(gpointer kv) {
   g_free(kv);
-}
-
-static void free_context_hash_value(gpointer data) {
-  struct ip_hash_value * value = data;
-  pthread_mutex_destroy(&value->connect_lock);
-  free(value->transport);
-  free(value);
 }
 
 static union ibv_gid get_gid(struct ibv_context *context) {

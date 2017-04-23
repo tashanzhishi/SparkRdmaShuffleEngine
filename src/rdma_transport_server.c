@@ -83,8 +83,9 @@ void destroy_server() {
 /************************************************************************/
 
 static void shutdown_connect(gpointer key, gpointer value, gpointer user_data) {
-  struct rdma_transport *transport = (struct rdma_transport *)value;
-  rdma_shutdown_connect(transport);
+  struct ip_hash_value *hash_value = (struct ip_hash_value *)value;
+  pthread_mutex_destroy(&hash_value->connect_lock);
+  rdma_shutdown_connect(hash_value->transport);
 }
 
 
@@ -170,20 +171,21 @@ static void *accept_thread(void *arg) {
 
     pthread_mutex_lock(&g_rdma_context->hash_lock);
     struct ip_hash_value *value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip);
+    struct rdma_transport *server;
     //if (value == NULL || value->transport->is_ready == 0) {
       if (value == NULL) {
         char *key = (char *) calloc(1, IP_CHAR_SIZE);
         strcpy(key, remote_ip);
         value = (struct ip_hash_value *) calloc(1, sizeof(struct ip_hash_value));
-        value->transport = (struct rdma_transport *) calloc(1, sizeof(struct rdma_transport));
+        server = value->transport = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
         pthread_mutex_init(&value->connect_lock, NULL);
         // server
-        strcpy(value->transport->local_ip, local_ip);
-        strcpy(value->transport->remote_ip, remote_ip);
+        strcpy(server->local_ip, local_ip);
+        strcpy(server->remote_ip, remote_ip);
 
         g_hash_table_insert(g_rdma_context->hash_table, key, value);
       }
-      struct rdma_transport *server = value->transport;
+      server = value->transport;
       pthread_mutex_unlock(&g_rdma_context->hash_lock);
 
       pthread_mutex_lock(&value->connect_lock);
