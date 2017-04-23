@@ -198,6 +198,7 @@ static void copy_msg_to_rdma(varray_t *chunk_array, uint8_t *msg, uint32_t len) 
     chunk->header.flags = 0;
     chunk->header.chunk_len = copy_len;
     chunk->header.data_len = len;
+    chunk->header.chunk_id = i;
     memcpy(chunk->body, now, copy_len);
     now += copy_len;
     now_len -= RDMA_BODY_SIZE;
@@ -221,6 +222,7 @@ static void copy_header_and_body_to_rdma(varray_t *chunk_array, uint8_t *header,
     chunk->header.flags = 0;
     chunk->header.chunk_len = copy_len;
     chunk->header.data_len = len;
+    chunk->header.chunk_id = i;
 
     if (is_header) {
       if (head_len < RDMA_BODY_SIZE) {
@@ -260,34 +262,57 @@ static struct rdma_transport *get_transport_from_ip(const char *host, uint16_t p
 
   struct ip_hash_value *value =
       g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
-
   if (value == NULL) {
     char *key = (char *)calloc(1, IP_CHAR_SIZE);
     strcpy(key, remote_ip_str);
     value = (struct ip_hash_value *)calloc(1, sizeof(struct ip_hash_value));
+    value->transport = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
+    struct rdma_transport *client = value->transport;
     pthread_mutex_init(&value->connect_lock, NULL);
+    // client
+    client->data_id = 0;
+    pthread_mutex_init(&client->id_lock, NULL);
+    strcpy(client->remote_ip, remote_ip_str);
+    char local_ip_str[IP_CHAR_SIZE];
+    set_local_ip(local_ip_str);
+    strcpy(client->local_ip, local_ip_str);
+
     g_hash_table_insert(g_rdma_context->hash_table, key, value);
 
-    pthread_mutex_lock(&value->connect_lock);
     pthread_mutex_unlock(&g_rdma_context->hash_lock);
+
+    pthread_mutex_lock(&value->connect_lock);
+    if (client->rc_qp == NULL) {
+      rdma_create_connect(client);
+    }
+    pthread_mutex_unlock(&value->connect_lock);
 
     if (connect_server(remote_ip_str, port) < 0) {
       LOG(ERROR, "connect server %s:%u failed", remote_ip_str, port);
       abort();
     }
-    value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
-    pthread_mutex_unlock(&value->connect_lock);
-  } else if (value->transport == NULL) {
-    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+
     pthread_mutex_lock(&value->connect_lock);
-    value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip_str);
-    GPR_ASSERT(value->transport);
+    if (client->is_ready == 0) {
+      rdma_complete_connect(client);
+      client->is_ready = 1;
+    }
     pthread_mutex_unlock(&value->connect_lock);
+  } else if (value->transport->is_ready == 0) {
+    int is_ready = value->transport->is_ready;
+    pthread_mutex_unlock(&g_rdma_context->hash_lock);
+
+    while (is_ready == 0) {
+      pthread_mutex_lock(&value->connect_lock);
+      is_ready = value->transport->is_ready;
+      pthread_mutex_unlock(&value->connect_lock);
+      usleep(100);
+    }
   } else {
     pthread_mutex_unlock(&g_rdma_context->hash_lock);
   }
 
-  GPR_ASSERT(value->transport);
+  GPR_ASSERT(value->transport->is_ready == 1);
   return value->transport;
 }
 
@@ -299,8 +324,11 @@ static int connect_server(const char *ip_str, uint16_t port) {
 
   // if link is existing, return
   struct ip_hash_value *value = g_hash_table_lookup(g_rdma_context->hash_table, ip_str);
-  if (value->transport) {
-    LOG(ERROR, "the link to %s is existing or null", ip_str);
+  GPR_ASSERT(value);
+  struct rdma_transport *client = value->transport;
+  GPR_ASSERT(client);
+  if (client->rc_qp == NULL) {
+    LOG(ERROR, "not create the qp to %s", ip_str);
     return -1;
   }
 
@@ -309,14 +337,6 @@ static int connect_server(const char *ip_str, uint16_t port) {
   srv_addr.sin_family = AF_INET;
   srv_addr.sin_port = htons(port);
   srv_addr.sin_addr.s_addr = inet_addr(ip_str);
-
-  struct rdma_transport *client = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
-  client->data_id = 0;
-  pthread_mutex_init(&client->id_lock, NULL);
-  strcpy(client->remote_ip, ip_str);
-  char local_ip_str[IP_CHAR_SIZE];
-  set_local_ip(local_ip_str);
-  strcpy(client->local_ip, local_ip_str);
 
   int client_fd;
   if ((client_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -330,18 +350,13 @@ static int connect_server(const char *ip_str, uint16_t port) {
     goto error;
   }
 
-  // create qp, it must call before exchange_info()
-  rdma_create_connect(client);
   // this is a blocking function
   if (exchange_info(client_fd, client, true) < 0) {
     LOG(ERROR, "client exchange information failed");
     goto error;
   }
-  rdma_complete_connect(client);
+
   close(client_fd);
-
-  value->transport = client;
-
   return 0;
 error:
   if (client_fd > 0) {

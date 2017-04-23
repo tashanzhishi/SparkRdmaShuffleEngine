@@ -10,11 +10,11 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 2048
-#define MAX_PRE_RECV_QP (1024)
+#define MAX_PRE_RECV_QP (512)
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 10
-#define MAX_EVENT_PER_POLL 64
+#define MAX_EVENT_PER_POLL 512
 
 struct qp_attr {
   //uint64_t gid_global_interface_id;	  // Store the gid fields separately because I
@@ -27,29 +27,20 @@ struct qp_attr {
 struct rdma_context {
   struct ibv_context *context;
   struct ibv_pd *pd;
-
-  //int cq_num;
-  //pthread_mutex_t cq_lock;
-  //struct ibv_cq *cq[MAX_POLL_THREAD];
-  //struct ibv_comp_channel *comp_channel[MAX_POLL_THREAD];
-  //pthread_t poll_ids[MAX_POLL_THREAD];
-  //pthread_t work_ids[MAX_POLL_THREAD];
-  //GQueue *work_queue[MAX_POLL_THREAD];
-  //pthread_mutex_t queue_lock[MAX_POLL_THREAD];
-
   struct rdma_buffer_pool *rbp;
 
   GHashTable *hash_table;
   GHashTable *host2ipstr;
   pthread_mutex_t hash_lock;
 
-  GThreadPool *thread_pool;
+  GThreadPool *work_thread_pool;
 
   int sfd;
 };
 
 struct rdma_transport {
-  uint8_t creating;
+  uint8_t is_ready;
+
   struct qp_attr local_qp_attr;
   struct qp_attr remote_qp_attr;
   int            cq_id;
@@ -60,21 +51,28 @@ struct rdma_transport {
   char local_ip[IP_CHAR_SIZE];
   char remote_ip[IP_CHAR_SIZE];
 
+
   // for client
   uint32_t data_id;
   pthread_mutex_t id_lock;
 
-  // for server
-  pthread_t poll_id;
-  GQueue *work_queue;
-  pthread_mutex_t queue_lock;
-  pthread_t work_id;
-  pthread_cond_t cv;
-  pthread_mutex_t cv_lock;
-  volatile int running;
 
-  GHashTable *cache;
-  void *recvk_array;
+  // for server
+  pthread_t poll_pid;
+
+  pthread_t handle_pid;
+  GQueue *handle_quque;
+  pthread_mutex_t handle_queue_lock;
+  pthread_cond_t handle_cv;
+  pthread_mutex_t handle_cv_lock;
+  volatile int is_handle_running;
+
+  pthread_t work_pid;
+  GQueue *work_queue;
+  pthread_mutex_t work_queue_lock;
+  pthread_cond_t work_cv;
+  pthread_mutex_t work_cv_lock;
+  volatile int is_work_running;
 };
 
 
@@ -111,6 +109,7 @@ int rdma_create_connect(struct rdma_transport *transport);
 void rdma_complete_connect(struct rdma_transport *transport);
 void rdma_shutdown_connect(struct rdma_transport *transport);
 
+void rdma_transport_recv_with_num(struct rdma_transport *transport, uint32_t num);
 int rdma_transport_recv(struct rdma_transport *transport);
 int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk *send_wc);
 
@@ -120,6 +119,8 @@ void set_local_ip(char *ip_str);
 
 //struct rdma_transport *get_transport_from_ip(const char *ip_str, uint16_t port,
 //                                             create_transport_fun create_transport);
+
+void work_thread(gpointer data, gpointer user_data);
 
 
 #endif /* RDMA_UTILS_H_ */

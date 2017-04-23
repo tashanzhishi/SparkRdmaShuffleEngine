@@ -31,8 +31,6 @@ struct accept_thread_arg {
   uint16_t port;
 };
 
-static int connid[MAX_POLL_THREAD];
-
 
 static int create_transport_server(const char *ip_str, uint16_t port);
 static int init_server_socket(const char *host, uint16_t port);
@@ -45,9 +43,6 @@ static void shutdown_connect(gpointer key, gpointer value, gpointer user_data);
 int init_server(const char *host, uint16_t port) {
   rdma_context_init();
 
-  for (int i=0; i<MAX_POLL_THREAD; i++)
-    connid[i] = i;
-
   if (init_server_socket(host, port) < 0) {
     LOG(ERROR, "init_server_socket failed");
     abort();
@@ -57,6 +52,8 @@ int init_server(const char *host, uint16_t port) {
 #if GLIB_MINOR_VERSION < 32
   g_thread_init(NULL);
 #endif
+  g_rdma_context->work_thread_pool = g_thread_pool_new(work_thread, NULL, THREAD_POOL_SIZE, TRUE, NULL);
+  LOG(DEBUG, "new thread pool of %d", THREAD_POOL_SIZE);
 
   return 0;
 }
@@ -65,6 +62,8 @@ int init_server(const char *host, uint16_t port) {
 
 void destroy_server() {
   LOG(INFO, "destroy server and will free all resource");
+
+  g_thread_pool_free(g_rdma_context->work_thread_pool, 0, 1);
 
   // shutdown all connection of hash table
   g_hash_table_foreach(g_rdma_context->hash_table, shutdown_connect, NULL);
@@ -170,37 +169,42 @@ static void *accept_thread(void *arg) {
 
     pthread_mutex_lock(&g_rdma_context->hash_lock);
     struct ip_hash_value *value = g_hash_table_lookup(g_rdma_context->hash_table, remote_ip);
-    if (value == NULL) {
-      char *key = (char *)calloc(1, IP_CHAR_SIZE);
-      strcpy(key, remote_ip);
-      value = (struct ip_hash_value *)calloc(1, sizeof(struct ip_hash_value));
-      pthread_mutex_init(&value->connect_lock, NULL);
-      g_hash_table_insert(g_rdma_context->hash_table, key, value);
+    //if (value == NULL || value->transport->is_ready == 0) {
+      if (value == NULL) {
+        char *key = (char *) calloc(1, IP_CHAR_SIZE);
+        strcpy(key, remote_ip);
+        value = (struct ip_hash_value *) calloc(1, sizeof(struct ip_hash_value));
+        value->transport = (struct rdma_transport *) calloc(1, sizeof(struct rdma_transport));
+        pthread_mutex_init(&value->connect_lock, NULL);
+        // server
+        strcpy(value->transport->local_ip, local_ip);
+        strcpy(value->transport->remote_ip, remote_ip);
 
-      pthread_mutex_lock(&value->connect_lock);
+        g_hash_table_insert(g_rdma_context->hash_table, key, value);
+      }
+      struct rdma_transport *server = value->transport;
       pthread_mutex_unlock(&g_rdma_context->hash_lock);
 
-      struct rdma_transport *server = (struct rdma_transport *)calloc(1, sizeof(struct rdma_transport));
-      strcpy(server->local_ip, local_ip);
-      strcpy(server->remote_ip, remote_ip);
+      pthread_mutex_lock(&value->connect_lock);
+      if (server->rc_qp == NULL) {
+        rdma_create_connect(server);
+      }
+      pthread_mutex_unlock(&value->connect_lock);
 
-      rdma_create_connect(server);
       if (exchange_info(fd, server, false) < 0) {
         LOG(ERROR, "server exchange information failed");
         abort();
       }
-      rdma_complete_connect(server);
-      value->transport = server;
 
-      pthread_mutex_unlock(&value->connect_lock);
-    } else if (value->transport == NULL) {
-      pthread_mutex_unlock(&g_rdma_context->hash_lock);
       pthread_mutex_lock(&value->connect_lock);
-      GPR_ASSERT(value->transport);
+      if (server->is_ready == 0) {
+        rdma_complete_connect(server);
+        server->is_ready = 1;
+      }
       pthread_mutex_unlock(&value->connect_lock);
-    } else {
+    /*} else {
       pthread_mutex_unlock(&g_rdma_context->hash_lock);
-    }
+    }*/
     close(fd);
   }
 

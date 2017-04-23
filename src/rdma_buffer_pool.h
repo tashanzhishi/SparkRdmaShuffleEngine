@@ -9,15 +9,17 @@
 #include <infiniband/verbs.h>
 
 
-#define RDMA_CHUNK_SIZE	  (4096-40)
-#define RDMA_BUFFER_SIZE  10240
+//#define RDMA_CHUNK_SIZE	  (4096-40)
+#define RDMA_CHUNK_SIZE	  (64*1024)
+#define RDMA_BUFFER_SIZE  1024
 #define RDMA_BUF_FLAG     (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE)
 
 struct rdma_chunk_header {
   uint8_t flags;
+	uint32_t chunk_id;
   uint32_t chunk_len;
-  uint32_t data_id;
   uint32_t chunk_num;
+	uint32_t data_id;
 	uint32_t data_len;
 } __attribute__((__packed__));
 
