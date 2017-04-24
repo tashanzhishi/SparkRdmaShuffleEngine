@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "thread.h"
 #include "jni_common.h"
@@ -13,9 +14,16 @@
 extern struct rdma_context *g_rdma_context;
 
 static void *poll_thread(void *arg);
+static void *handle_thread(void *arg);
 static void handle_send_event(struct ibv_wc *wc);
 static void handle_recv_event(struct ibv_wc *wc);
 
+/*struct ibv_wc_short {
+  uint64_t		wr_id;
+  enum ibv_wc_status	status;
+  enum ibv_wc_opcode	opcode;
+  uint32_t		byte_len;
+};*/
 
 
 int rdma_create_connect(struct rdma_transport *transport) {
@@ -26,6 +34,11 @@ int rdma_create_connect(struct rdma_transport *transport) {
   transport->is_work_running = 0;
   pthread_mutex_init(&transport->work_queue_lock, NULL);
 
+  transport->handle_quque = g_queue_new();
+  transport->is_handle_running = 0;
+  pthread_mutex_init(&transport->handle_queue_lock, NULL);
+  pthread_cond_init(&transport->handle_cv, NULL);
+
   transport->comp_channel = ibv_create_comp_channel(g_rdma_context->context);
   GPR_ASSERT(transport->comp_channel);
   transport->cq =  ibv_create_cq(g_rdma_context->context, MAX_CQE + 1, NULL, transport->comp_channel, 0);
@@ -35,7 +48,8 @@ int rdma_create_connect(struct rdma_transport *transport) {
     abort();
   }
   transport->poll_pid = create_thread(poll_thread, transport);
-  //transport->work_pid = create_thread(work_thread, transport);
+  transport->handle_pid = create_thread(handle_thread, transport);
+  usleep(100);
 
   LOG(INFO, "*** now use RC ***");
 
@@ -75,9 +89,11 @@ void rdma_shutdown_connect(struct rdma_transport *transport) {
   if (transport->poll_pid > 0) {
     pthread_kill(transport->poll_pid, SIGQUIT);
   }
-  if (transport->work_queue != NULL) {
+  if (transport->handle_pid > 0) {
     g_queue_free(transport->work_queue);
     pthread_mutex_destroy(&transport->work_queue_lock);
+    pthread_cond_destroy(&transport->handle_cv);
+    pthread_kill(transport->handle_pid, SIGQUIT);
   }
 
   GPR_ASSERT(transport->rc_qp);
@@ -191,12 +207,10 @@ int rdma_transport_send(struct rdma_transport *transport, struct rdma_work_chunk
 // 1. copy rdma to jvm
 // 2. call channelRead0 of spark
 void work_thread(gpointer data, gpointer user_data) {
+  LOG(DEBUG, "work begin");
   struct rdma_transport *server = (struct rdma_transport *)data;
   GPR_ASSERT(server);
   GQueue *work_queue = server->work_queue;
-
-  // register quit signal
-  signal(SIGQUIT, quit_thread);
 
   while (1) {
     pthread_mutex_lock(&server->work_queue_lock);
@@ -204,14 +218,12 @@ void work_thread(gpointer data, gpointer user_data) {
     if (head == NULL || head->len != head->size) {
       server->is_work_running = 0;
       pthread_mutex_unlock(&server->work_queue_lock);
-      //pthread_cond_wait(&server->work_cv, &server->work_cv_lock);
-      //continue;
-      return;
+      break;
     }
-    GPR_ASSERT(server->is_work_running == 1);
     g_queue_pop_head(work_queue);
     pthread_mutex_unlock(&server->work_queue_lock);
 
+    GPR_ASSERT(server->is_work_running == 1);
     if (head->len != head->size/* || head->len == 0*/) {
       LOG(ERROR, "varray len != size (%u, %u)", head->len, head->size);
       abort();
@@ -226,15 +238,7 @@ void work_thread(gpointer data, gpointer user_data) {
     }
     GPR_ASSERT(len == data_len);
 
-    //test
-    char output[310]; uint32_t begin;
-    uint8_t *print = head->data[0]->body;
-    LOG(DEBUG, "###%u:%u:%s ->", data_id, len, server->remote_ip);
-    for (begin=0; begin<100 && begin<head->data[0]->header.chunk_len; begin++) {
-      sprintf(output+(begin*3), "%02x ", print[begin]);
-    }
-    output[begin*3] = '\0';
-    LOG(DEBUG, "%s", output);
+    LOG(DEBUG, "work %u:%u:%s", data_id, len, server->remote_ip);
 
     jbyteArray jba = jni_alloc_byte_array(data_len);
     int pos = 0;
@@ -250,17 +254,13 @@ void work_thread(gpointer data, gpointer user_data) {
     free(head);
     LOG(INFO, "work thread success");
   }
+  LOG(DEBUG, "work thread end");
 }
-
 
 
 /************************************************************************/
 /*                          local function                              */
 /************************************************************************/
-
-
-
-
 
 
 static gint compare_func(gconstpointer a, gconstpointer b) {
@@ -273,6 +273,7 @@ static gint compare_func(gconstpointer a, gconstpointer b) {
 }
 
 static void *poll_thread(void *arg) {
+  LOG(INFO, "poll thread begin");
   struct rdma_transport *server = (struct rdma_transport *)arg;
   GPR_ASSERT(server);
   struct ibv_comp_channel *channel = server->comp_channel;
@@ -283,12 +284,13 @@ static void *poll_thread(void *arg) {
   // register quit signal
   signal(SIGQUIT, quit_thread);
 
-  int event_num = 0;
   struct ibv_cq *ev_cq;
   void *ev_ctx;
-  struct ibv_wc wc[MAX_EVENT_PER_POLL];
+  int event_num = 1;
+  dynarray_t *wc_array;
 
   struct rdma_work_chunk *work_chunk;
+  struct ibv_wc *wc;
   uint32_t chunk_num;
   while (1) {
     LOG(DEBUG, "begin blocking ibv_get_cq_event");
@@ -296,25 +298,29 @@ static void *poll_thread(void *arg) {
       LOG(ERROR, "ibv_get_cq_event error, %s", strerror(errno));
       abort();
     }
-
     ibv_ack_cq_events(cq, 1);
-
     if (ibv_req_notify_cq(ev_cq, 0) < 0) {
       LOG(ERROR, "ibv_req_notify_cq error, %s", strerror(errno));
       abort();
     }
-
     do {
+      //if (event_num > 0) {
+        wc_array = DYNARRY_MALLOC0(MAX_EVENT_PER_POLL * sizeof(struct ibv_wc));
+        wc_array->size = MAX_EVENT_PER_POLL;
+        wc_array->user_id = (uint64_t) server;
+        wc = (struct ibv_wc *) wc_array->data;
+      //}
       event_num = ibv_poll_cq(cq, MAX_EVENT_PER_POLL, wc);
-      LOG(DEBUG, "poll %d event", event_num);
+      LOG(DEBUG, "poll %d event from %s", event_num, server->remote_ip);
 
       if (event_num < 0) {
         LOG(ERROR, "ibv_poll_cq poll error");
         abort();
-      } else {
+      } else if (event_num > 0) {
+        wc_array->len = event_num;
         for (int i = 0; i < event_num; ++i) {
-          work_chunk = (struct rdma_work_chunk *)wc[i].wr_id;
-          if (wc[i].opcode == IBV_WC_RECV && work_chunk->chunk->header.chunk_id == 0) {
+          work_chunk = (struct rdma_work_chunk *)wc->wr_id;
+          if (wc->opcode == IBV_WC_RECV && work_chunk->chunk->header.chunk_id == 0) {
             chunk_num = work_chunk->chunk->header.chunk_num;
             if (chunk_num == 1) {
               rdma_transport_recv(work_chunk->transport);
@@ -322,29 +328,70 @@ static void *poll_thread(void *arg) {
               rdma_transport_recv_with_num(work_chunk->transport, chunk_num);
             }
           }
+          wc++;
         }
-      }
 
-
-
-      for (int i = 0; i < event_num; i++) {
-        if (wc[i].status != IBV_WC_SUCCESS) {
-          LOG(ERROR, "ibv_wc.status error %d", wc[i].status);
-          abort();
-        } else {
-          if (wc[i].opcode == IBV_WC_SEND) {
-            handle_send_event(&wc[i]);
-          } else if (wc[i].opcode == IBV_WC_RECV) {
-            handle_recv_event(&wc[i]);
-          } else {
-            LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc[i].opcode);
-            abort();
-          }
+        pthread_mutex_lock(&server->handle_queue_lock);
+        g_queue_push_tail(server->handle_quque, wc_array);
+        if (server->is_handle_running == 0) {
+          server->is_handle_running = 1;
+          pthread_cond_signal(&server->handle_cv);
+          LOG(DEBUG, "awake handle thread");
         }
+        pthread_mutex_unlock(&server->handle_queue_lock);
+      } else {
+        free(wc_array);
       }
     } while (event_num);
   }
   return NULL;
+}
+
+static void *handle_thread(void *arg) {
+  LOG(INFO, "handle thread begin");
+  struct rdma_transport *transport = (struct rdma_transport *)arg;
+  GQueue *handle_queue = transport->handle_quque;
+
+  signal(SIGQUIT, quit_thread);
+
+  while (1) {
+    pthread_mutex_lock(&transport->handle_queue_lock);
+
+    dynarray_t *head = g_queue_peek_head(handle_queue);
+    if (head == NULL) {
+      transport->is_handle_running = 0;
+      pthread_mutex_unlock(&transport->handle_queue_lock);
+      pthread_cond_wait(&transport->handle_cv, &transport->handle_cv_lock);
+      continue;
+    }
+    g_queue_pop_head(handle_queue);
+
+    pthread_mutex_unlock(&transport->handle_queue_lock);
+
+    GPR_ASSERT(transport->is_handle_running == 1);
+    LOG(DEBUG, "handle %d event from %s", head->len, transport->remote_ip);
+
+    struct ibv_wc *wc = (struct ibv_wc *)head->data;
+    for (int i=0; i<head->len; i++) {
+      if (wc->status != IBV_WC_SUCCESS) {
+        LOG(ERROR, "ibv_wc.status error %d", wc->status);
+        abort();
+      } else {
+        if (wc->opcode == IBV_WC_SEND) {
+          LOG(DEBUG, "handle send");
+          handle_send_event(wc);
+        } else if (wc->opcode == IBV_WC_RECV) {
+          LOG(DEBUG, "handle recv");
+          handle_recv_event(wc);
+        } else {
+          LOG(ERROR, "ibv_wc.opcode = %d, which is not send or recv", wc->opcode);
+          abort();
+        }
+      }
+      wc++;
+    }
+    free(head);
+  }
 }
 
 
@@ -372,8 +419,8 @@ static void handle_recv_event(struct ibv_wc *wc) {
   // 目前设计只会有一个线程对chache操作
   // cache根据data_id缓冲，向线程池提交的参数是value可变长数组
   pthread_mutex_lock(&server->work_queue_lock);
-
   GList *found = g_queue_find_custom(server->work_queue, &data_id, compare_func);
+  pthread_mutex_unlock(&server->work_queue_lock);
   if (found == NULL) {
     // free by worker, donot free by this function and hash table
     varray_t *now = VARRY_MALLOC0(work_chunk->chunk->header.chunk_num);
@@ -383,7 +430,9 @@ static void handle_recv_event(struct ibv_wc *wc) {
     now->size = chunk->header.chunk_num;
     now->data[now->len++] = chunk;
     LOG(DEBUG, "recv id %u:%u:%s", data_id, chunk->header.data_len, server->remote_ip);
+    pthread_mutex_lock(&server->work_queue_lock);
     g_queue_push_tail(server->work_queue, now);
+    pthread_mutex_unlock(&server->work_queue_lock);
   } else {
     varray_t *now = found->data;
     if (now->len >= now->size) {
@@ -398,11 +447,11 @@ static void handle_recv_event(struct ibv_wc *wc) {
     }
     now->data[now->len++] = chunk;
   }
+  pthread_mutex_lock(&server->work_queue_lock);
   varray_t *head = g_queue_peek_head(server->work_queue);
   if (server->is_work_running == 0 && head && head->len == head->size) {
     server->is_work_running = 1;
-    LOG(INFO, "### -> %u:%u:%s", head->data_id,head->data[0]->header.data_len, server->remote_ip);
-    //pthread_cond_signal(&server->work_cv);
+    LOG(INFO, "awake work thread### -> %u:%u:%s", head->data_id,head->data[0]->header.data_len, server->remote_ip);
     g_thread_pool_push(g_rdma_context->work_thread_pool, server, NULL);
   }
   pthread_mutex_unlock(&server->work_queue_lock);

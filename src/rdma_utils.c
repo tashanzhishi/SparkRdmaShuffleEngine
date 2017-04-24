@@ -162,9 +162,9 @@ int modify_qp_to_rts(struct ibv_qp *qp, struct qp_attr *local_qp_attr) {
   struct ibv_qp_attr rts_attr;
   memset(&rts_attr, 0, sizeof(rts_attr));
   rts_attr.qp_state = IBV_QPS_RTS;
-  rts_attr.timeout  = 3;
-  rts_attr.retry_cnt = 3;
-  rts_attr.rnr_retry = 3;
+  rts_attr.timeout  = 0x14;
+  rts_attr.retry_cnt = 0x07;
+  rts_attr.rnr_retry = 0x07;
   rts_attr.max_rd_atomic = 0; // rc must add it
   rts_attr.sq_psn   = local_qp_attr->psn;
 
@@ -181,7 +181,7 @@ int modify_qp_to_rtr(struct ibv_qp *qp, struct qp_attr *remote_qp_attr) {
   memset(&rtr_attr, 0, sizeof(rtr_attr));
   rtr_attr.qp_state = IBV_QPS_RTR;
   rtr_attr.path_mtu = IBV_MTU_4096;
-  rtr_attr.min_rnr_timer = 3;
+  rtr_attr.min_rnr_timer = 0x14;
   rtr_attr.max_dest_rd_atomic = 0; // rc must add it
   rtr_attr.dest_qp_num = remote_qp_attr->qpn;
   rtr_attr.rq_psn = remote_qp_attr->psn;

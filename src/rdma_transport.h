@@ -63,6 +63,15 @@ typedef struct varray_t {
 } varray_t;
 #define VARRY_MALLOC0(len) ((varray_t *)calloc(1, sizeof(varray_t)+(sizeof(void*)*(len))))
 
+typedef struct dynarray_t {
+  int len;
+  uint32_t size;
+  uint64_t user_id;
+  void* data[0];
+} dynarray_t;
+#define DYNARRY_MALLOC0(len) ((dynarray_t *)calloc(1, sizeof(dynarray_t)+(len)))
+#define DYNARRY_MALLOC(len) ((dynarray_t *)malloc(sizeof(dynarray_t)+(len)))
+
 struct ip_hash_value {
   struct rdma_transport *transport;
   pthread_mutex_t connect_lock;

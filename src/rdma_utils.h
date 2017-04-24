@@ -10,11 +10,11 @@
 #define MAX_POLL_THREAD 4
 #define IB_PORT_NUM 1
 #define MAX_CQE 2048
-#define MAX_PRE_RECV_QP (512)
+#define MAX_PRE_RECV_QP (1024)
 #define IB_SERVER_PORT 6789
 #define IP_CHAR_SIZE 20
 #define THREAD_POOL_SIZE 10
-#define MAX_EVENT_PER_POLL 512
+#define MAX_EVENT_PER_POLL 128
 
 struct qp_attr {
   //uint64_t gid_global_interface_id;	  // Store the gid fields separately because I

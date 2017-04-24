@@ -40,16 +40,6 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   uint32_t data_id = client->data_id++;
   pthread_mutex_unlock(&client->id_lock);
 
-  // wyb test
-  char output[310]; uint32_t begin;
-  LOG(DEBUG, "### -> %u:%u:%s", data_id, len, host);
-  for (begin=0; begin<100 && begin<len; begin++) {
-    sprintf(output+(begin*3), "%02x ", msg[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
-
-
   uint32_t chunk_num = len / RDMA_BODY_SIZE + (len % RDMA_BODY_SIZE == 0 ? 0 : 1);
   struct rdma_chunk *chunk_list = get_rdma_chunk_list_from_pool(g_rdma_context->rbp, chunk_num);
   if (chunk_list == NULL) {
@@ -73,15 +63,6 @@ int send_msg(const char *host, uint16_t port, uint8_t *msg, uint32_t len) {
   copy_msg_to_rdma(chunk_array, msg, len);
   //LOG(DEBUG, "send_msg: copy msg to rdma success");
 
-  // wyb test
-  uint8_t *print = chunk_array->data[0]->body;
-  LOG(DEBUG, "### -> %u:%u:%s", data_id, len, host);
-  for (begin=0; begin<100 && begin<chunk_array->data[0]->header.chunk_len; begin++) {
-    sprintf(output+(begin*3), "%02x ", print[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
-
   rdma_send_msg(chunk_array, len);
   LOG(DEBUG, "send_msg success: %u:%u:%s", chunk_array->data_id, len, host);
 
@@ -98,23 +79,6 @@ int send_msg_with_header(const char *host, uint16_t port,
   pthread_mutex_lock(&client->id_lock);
   uint32_t data_id = client->data_id++;
   pthread_mutex_unlock(&client->id_lock);
-
-  //test
-  char output[310]; uint32_t begin;
-  LOG(DEBUG, "### -> %u:%u:%u:%s", data_id, head_len, body_len, host);
-  LOG(DEBUG, "### -> %u:%u:%s", data_id, head_len+body_len, host);
-  int hlen = head_len;
-  for (begin=0; begin<hlen; begin++) {
-    sprintf(output+(begin*3), "%02x ", header[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
-  int blen = (30<body_len?30:body_len);
-  for (begin=0; begin<blen; begin++) {
-    sprintf(output+(begin*3), "%02x ", body[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
 
   uint32_t len = head_len + body_len;
   uint32_t chunk_num = len / RDMA_BODY_SIZE + (len % RDMA_BODY_SIZE == 0 ? 0 : 1);
@@ -139,16 +103,6 @@ int send_msg_with_header(const char *host, uint16_t port,
 
   copy_header_and_body_to_rdma(chunk_array, header, head_len, body, body_len);
   //LOG(DEBUG, "copy_header_and_body_to_rdma: copy header and body to rdma success");
-
-  //test
-  uint8_t *print = chunk_array->data[0]->body;
-  LOG(DEBUG, "### -> %u:%u:%u:%s", data_id, head_len, body_len, host);
-  LOG(DEBUG, "### -> %u:%u:%s", data_id, head_len+body_len, host);
-  for (begin=0; begin<100 && begin<chunk_array->data[0]->header.chunk_len; begin++) {
-    sprintf(output+(begin*3), "%02x ", print[begin]);
-  }
-  output[begin*3] = '\0';
-  LOG(DEBUG, "%s", output);
 
   rdma_send_msg(chunk_array, len);
   LOG(DEBUG, "send_msg_with_header success: %u:%u:%s", chunk_array->data_id, len, host);
