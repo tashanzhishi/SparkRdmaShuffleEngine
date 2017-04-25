@@ -319,13 +319,15 @@ static void *poll_thread(void *arg) {
       } else if (event_num > 0) {
         wc_array->len = event_num;
         for (int i = 0; i < event_num; ++i) {
-          work_chunk = (struct rdma_work_chunk *)wc->wr_id;
-          if (wc->opcode == IBV_WC_RECV && work_chunk->chunk->header.chunk_id == 0) {
-            chunk_num = work_chunk->chunk->header.chunk_num;
-            if (chunk_num == 1) {
-              rdma_transport_recv(work_chunk->transport);
-            } else {
-              rdma_transport_recv_with_num(work_chunk->transport, chunk_num);
+          if (wc->opcode == IBV_WC_RECV) {
+            work_chunk = (struct rdma_work_chunk *)wc->wr_id;
+            if (work_chunk->chunk->header.chunk_id == 0) {
+              chunk_num = work_chunk->chunk->header.chunk_num;
+              if (chunk_num == 1) {
+                rdma_transport_recv(work_chunk->transport);
+              } else {
+                rdma_transport_recv_with_num(work_chunk->transport, chunk_num);
+              }
             }
           }
           wc++;
@@ -333,12 +335,15 @@ static void *poll_thread(void *arg) {
 
         pthread_mutex_lock(&server->handle_queue_lock);
         g_queue_push_tail(server->handle_quque, wc_array);
+        pthread_mutex_unlock(&server->handle_queue_lock);
+
+        pthread_mutex_lock(&server->handle_cv_lock);
         if (server->is_handle_running == 0) {
           server->is_handle_running = 1;
           pthread_cond_signal(&server->handle_cv);
           LOG(DEBUG, "awake handle thread");
         }
-        pthread_mutex_unlock(&server->handle_queue_lock);
+        pthread_mutex_unlock(&server->handle_cv_lock);
       } else {
         free(wc_array);
       }
@@ -356,16 +361,19 @@ static void *handle_thread(void *arg) {
 
   while (1) {
     pthread_mutex_lock(&transport->handle_queue_lock);
-
     dynarray_t *head = g_queue_peek_head(handle_queue);
+    pthread_mutex_unlock(&transport->handle_queue_lock);
+
     if (head == NULL) {
+      pthread_mutex_lock(&transport->handle_cv_lock);
       transport->is_handle_running = 0;
-      pthread_mutex_unlock(&transport->handle_queue_lock);
       pthread_cond_wait(&transport->handle_cv, &transport->handle_cv_lock);
+      pthread_mutex_unlock(&transport->handle_cv_lock);
       continue;
     }
-    g_queue_pop_head(handle_queue);
 
+    pthread_mutex_lock(&transport->handle_queue_lock);
+    g_queue_pop_head(handle_queue);
     pthread_mutex_unlock(&transport->handle_queue_lock);
 
     GPR_ASSERT(transport->is_handle_running == 1);

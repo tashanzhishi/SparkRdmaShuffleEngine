@@ -46,6 +46,9 @@ struct rdma_transport {
   GQueue *work_queue;
   pthread_mutex_t work_queue_lock;
   volatile int is_work_running;
+
+  //test
+  uint32_t now_recv;
 };
 
 struct rdma_work_chunk {
